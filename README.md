@@ -3,7 +3,8 @@ These scripts are created for the use of ail-typo-squatting from circle. And for
 Usage ./automate.sh <domainlist> <outputfolder>
 Looks for subdomains of the domains stored in the domainlist using subfinder.
 runs ail-typo-squatting on both domains and subdomains and generates similar looking domains.
-tries to filter them by registered domains using massdns.
+tries to filter them by registered domains using massdns. 
+The resolvers.txt contains dnsservers to be used by massdns and increases the speed of resolving by using more dnsservers.
 stores this infomation in resolved.txt.
 for resolveble domains it runs gowitness to make screenshots and these get stored inside the screenshot folder.
 gowitness logs get stored as well.
