@@ -2,6 +2,7 @@ apt update && apt upgrade -y
 apt install -y python3 python3-pip gowitness git subfinder massdns
 
 mkdir /home/ail-typo-squatting
+mkdir /home/ail-typo-squatting/output
 chmod 777 /home/ail-typo-squatting
 
 # Define the script path
@@ -164,12 +165,14 @@ printf '%s\n' 'import openpyxl' \
 '' \
 'wb.save(output_report)' \
 'print(f"Security report saved as {output_report}")' \
-| sudo tee "$PYTHON_SCRIPT_PATH" > /dev/null
+| sudo tee "$REPORT_SCRIPT" > /dev/null
 
-git clone https://github.com/typosquatter/ail-typo-squatting.git /home/ail-typo-squatting
+git clone https://github.com/typosquatter/ail-typo-squatting.git /home/ail-typo-squatting/ail-typo-squatting
 pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt --break-system-packages
 pip install openpyxl --break-system-packages
 
+touch /home/ail-typo-squatting/usage.txt
+printf '%s\n' './automate.sh <domainlist> <company name>' | sudo tee /home/ail-typo-squatting/usage.txt
 
 
 
