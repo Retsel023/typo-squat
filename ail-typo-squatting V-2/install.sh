@@ -167,8 +167,8 @@ printf '%s\n' 'import openpyxl' \
 | sudo tee "$PYTHON_SCRIPT_PATH" > /dev/null
 
 git clone https://github.com/typosquatter/ail-typo-squatting.git /home/ail-typo-squatting
-pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt
-pip install openpyxl
+pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt --break-system-packages
+pip install openpyxl --break-system-packages
 
 
 
