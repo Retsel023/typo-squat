@@ -71,6 +71,8 @@ grep " A " "$RESOLVED_OUTPUT" | awk '{print $1}' | sed 's/\.$//' > "$CHECKED_DOM
 echo "[*] Capturing screenshots of resolved domains and logging output"
 mkdir -p "$SCREENSHOTS_FOLDER"
 gowitness scan file -f "$CHECKED_DOMAINS" --screenshot-path "$SCREENSHOTS_FOLDER" &> "$GOWITNESS_LOG"
+#gowitness scan file -f "$CHECKED_DOMAINS" --write-screenshots "$SCREENSHOTS_FOLDER" &> "$GOWITNESS_LOG"
+
 
 # Step 8: Run the Python script to generate the final report
 echo "[*] Generating the final security report"
