@@ -90,18 +90,18 @@ printf '%s\n' '#!/bin/bash' \
 'python3 "$REPORT_GENERATOR_SCRIPT" "$OUTPUT_FOLDER" "$FINAL_REPORT"' \
 '' \
 'echo "[*] Scan and report generation completed. Report saved as $FINAL_REPORT."' \
-'echo "[*] gowitness log stored at $GOWITNESS_LOG"' | sudo tee /home/ail-typo-squatting/automate.sh > /dev/null
+'echo "[*] gowitness log stored at $GOWITNESS_LOG"' | tee /home/ail-typo-squatting/automate.sh > /dev/null
 
 
 # Make the generated script executable
-sudo chmod +x "$SCRIPT_PATH"
+chmod +x "$SCRIPT_PATH"
 touch /home/ail-typo-squatting/resolvers.txt
 printf '%s\n' '1.1.1.1' \
 '1.0.0.1' \
 '9.9.9.9' \
 '8.8.8.8' \
 '208.67.222.222' \
-| sudo tee /home/ail-typo-squatting/resolvers.txt > /dev/null
+| tee /home/ail-typo-squatting/resolvers.txt > /dev/null
 
 # Use printf to write the Python script content to the target file
 printf '%s\n' 'import openpyxl' \
@@ -210,14 +210,14 @@ printf '%s\n' 'import openpyxl' \
 '' \
 'wb.save(output_report)' \
 'print(f"Security report saved as {output_report}")' \
-| sudo tee "$REPORT_SCRIPT" > /dev/null
+| tee "$REPORT_SCRIPT" > /dev/null
 
 git clone https://github.com/typosquatter/ail-typo-squatting.git /home/ail-typo-squatting/ail-typo-squatting
 pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt --break-system-packages
 pip install openpyxl retrie requests tldextract --break-system-packages
 
 touch /home/ail-typo-squatting/usage.txt
-printf '%s\n' './automate.sh <domainlist> <company name>' | sudo tee /home/ail-typo-squatting/usage.txt
+printf '%s\n' './automate.sh <domainlist> <company name>' | tee /home/ail-typo-squatting/usage.txt
 
 #if urlib3 keeps failing
 #apt remove python3-urllib3
