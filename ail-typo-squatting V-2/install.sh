@@ -213,9 +213,9 @@ printf '%s\n' 'import openpyxl' \
 | tee "$REPORT_SCRIPT" > /dev/null
 
 git clone https://github.com/typosquatter/ail-typo-squatting.git /home/ail-typo-squatting/ail-typo-squatting
-pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt
-#pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt --break-system-packages
-#pip install openpyxl retrie requests tldextract --break-system-packages
+#pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt
+pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt --break-system-packages
+pip install openpyxl retrie requests tldextract pillow --break-system-packages
 
 touch /home/ail-typo-squatting/usage.txt
 printf '%s\n' './automate.sh <domainlist> <company name>' | tee /home/ail-typo-squatting/usage.txt
