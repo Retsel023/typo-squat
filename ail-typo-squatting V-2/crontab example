@@ -1,0 +1,4 @@
+#onderstaand voorbeeld is voor iedere 20 min.
+m    h dom mon dow
+*/20 * *   *   * /home/ail-typo-squatting/automate.sh /home/ail-typo-squatting/clazing.txt /home/ail-typo-squatting/clazing
+*/20 * *   *   * <path to automation script> <path to domainlist> <output directory>
