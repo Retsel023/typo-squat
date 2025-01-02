@@ -1,6 +1,6 @@
-#onderstaand voorbeeld is voor iedere 20 min.
+#onderstaand voorbeeld is voor iedere maandag om 08:30.
 #m h dom mon dow
 #clazing
-*/20 * * * * /home/ail-typo-squatting/automate.sh /home/ail-typo-squatting/clazing.txt /home/ail-typo-squatting/clazing
+30 8 * * 1 /home/ail-typo-squatting/automate.sh /home/ail-typo-squatting/clazing.txt /home/ail-typo-squatting/clazing
 
-#*/20 * * * * <path to automation script> <path to domainlist> <output directory>
+#30 8 * * 1 <path to automation script> <path to domainlist> <output directory>
