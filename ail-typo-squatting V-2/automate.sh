@@ -6,9 +6,9 @@ OUTPUT_FOLDER="$2"                     # Main output directory for this company
 BACKUP_FOLDER="$OUTPUT_FOLDER/backups" # Directory to store backups
 
 # Paths for required tools and files
-TYPO_SCRIPT="ail-typo-squatting/ail_typo_squatting/typo.py" # Path to typo.py for typo generation
-RESOLVERS_FILE="resolvers.txt"               # Path to resolvers file for massdns
-REPORT_GENERATOR_SCRIPT="report2.py" # Python script for generating the report
+TYPO_SCRIPT="/home/ail-typo-squatting/ail-typo-squatting/ail_typo_squatting/typo.py" # Path to typo.py for typo generation
+RESOLVERS_FILE="/home/ail-typo-squatting/resolvers.txt"               # Path to resolvers file for massdns
+REPORT_GENERATOR_SCRIPT="/home/ail-typo-squatting/report2.py" # Python script for generating the report
 
 # Timestamp for backups (format: YYYY-MM-DD_HH-MM-SS)
 TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
