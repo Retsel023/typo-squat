@@ -2,10 +2,17 @@
 
 # Lock file
 LOCKFILE="/tmp/automate.lock"
+QUEUE_FILE="/tmp/cron_queue"
+
+# Ensure the cron_queue file exists and has the correct permissions
+touch "$QUEUE_FILE"
+chmod 666 "$QUEUE_FILE"
 
 # Check if the lock file exists
 if [ -e "$LOCKFILE" ]; then
-    echo "[*] Another instance is running. Exiting."
+    echo "[*] Another instance is running. Adding to queue."
+    echo "/home/ail-typo-squatting/auto.sh $1 $2" >> "$QUEUE_FILE"
+    echo "[*] Job added to queue: /home/ail-typo-squatting/auto.sh $1 $2"
     exit 1
 fi
 
@@ -19,6 +26,10 @@ trap "rm -f $LOCKFILE" EXIT
 DOMAIN_LIST="$1"
 OUTPUT_FOLDER="$2"
 BACKUP_FOLDER="$OUTPUT_FOLDER/backups"
+
+# Debug statements to confirm input arguments
+echo "[*] DOMAIN_LIST: $DOMAIN_LIST"
+echo "[*] OUTPUT_FOLDER: $OUTPUT_FOLDER"
 
 # Paths for required tools and files
 TYPO_SCRIPT="/home/ail-typo-squatting/ail-typo-squatting/ail_typo_squatting/typo.py"
@@ -93,6 +104,3 @@ python3 "$REPORT_GENERATOR_SCRIPT" "$OUTPUT_FOLDER" "$FINAL_REPORT" >> "$OUTPUT_
 
 echo "[*] Scan and report generation completed. Report saved as $FINAL_REPORT."
 echo "[*] gowitness log stored at $GOWITNESS_LOG"
-
-# Add the next run to the queue
-echo "/home/ail-typo-squatting/auto.sh $DOMAIN_LIST $OUTPUT_FOLDER" >> /tmp/cron_queue
