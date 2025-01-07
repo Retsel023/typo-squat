@@ -1,6 +1,4 @@
-#onderstaand voorbeeld is voor iedere maandag om 08:30.
-#m h dom mon dow
-#clazing
-30 8 * * 1 /home/ail-typo-squatting/automate.sh /home/ail-typo-squatting/clazing.txt /home/ail-typo-squatting/clazing
-
-#30 8 * * 1 <path to automation script> <path to domainlist> <output directory>
+# m h  dom mon dow   command
+10 14 * * * /home/ail-typo-squatting/auto.sh /home/ail-typo-squatting/clazing.txt /home/ail-typo-squatting/output/clazing
+9 14 * * * /home/ail-typo-squatting/auto.sh /home/ail-typo-squatting/capturetech.txt /home/ail-typo-squatting/output/capturetech
+* * * * * /home/ail-typo-squatting/queue_processor.sh
