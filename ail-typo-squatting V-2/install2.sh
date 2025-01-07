@@ -13,7 +13,6 @@ touch "$REPORT_SCRIPT"
 # Use printf to create the script content and write it to the target file
 Got it! Here is the script wrapped in a `printf` command with the format you specified:
 
-```bash
 printf '%s\n' '#!/bin/bash' \
 ' ' \
 '# Lock file' \
@@ -121,4 +120,14 @@ printf '%s\n' '#!/bin/bash' \
 'echo "[*] Scan and report generation completed. Report saved as $FINAL_REPORT."' \
 'echo "[*] gowitness log stored at $GOWITNESS_LOG"' \
 ' ' | tee /home/ail-typo-squatting/auto.sh > /dev/null
-```
+
+
+# Make the generated script executable
+chmod +x "$SCRIPT_PATH"
+touch /home/ail-typo-squatting/resolvers.txt
+printf '%s\n' '1.1.1.1' \
+'1.0.0.1' \
+'9.9.9.9' \
+'8.8.8.8' \
+'208.67.222.222' \
+| tee /home/ail-typo-squatting/resolvers.txt > /dev/null
