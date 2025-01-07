@@ -6,10 +6,14 @@ mkdir /home/ail-typo-squatting/output
 chmod 777 /home/ail-typo-squatting
 
 # Define the script path
-SCRIPT_PATH="/home/ail-typo-squatting/autom.sh"
+SCRIPT_PATH="/home/ail-typo-squatting/auto.sh"
 REPORT_SCRIPT="/home/ail-typo-squatting/report2.py"
+QUEUE_PROCESSOR="/home/ail-typo-squatting/queue_processor.sh"
+RESOLVERS="/home/ail-typo-squatting/resolvers.txt"
 touch "$SCRIPT_PATH"
 touch "$REPORT_SCRIPT"
+touch "$QUEUE_PROCESSOR"
+touch "$RESOLVERS"
 
 # Use printf to create the script content and write it to the target file
 printf '%s\n' '#!/bin/bash' \
@@ -118,18 +122,43 @@ printf '%s\n' '#!/bin/bash' \
 ' ' \
 'echo "[*] Scan and report generation completed. Report saved as $FINAL_REPORT."' \
 'echo "[*] gowitness log stored at $GOWITNESS_LOG"' \
-' ' | tee /home/ail-typo-squatting/auto.sh > /dev/null
-
-
+' ' | tee $SCRIPT_PATH > /dev/null
 # Make the generated script executable
 chmod +x "$SCRIPT_PATH"
-touch /home/ail-typo-squatting/resolvers.txt
+
+#Crontab queing
+printf '%s\n' '#!/bin/bash' \
+' ' \
+'# Lock file for the queue processor' \
+'QUEUE_LOCKFILE="/tmp/queue_processor.lock"' \
+' ' \
+'# Check if the queue processor is already running' \
+'if [ -e "$QUEUE_LOCKFILE" ]; then' \
+'    echo "[*] Queue processor is already running. Exiting."' \
+'    exit 1' \
+'fi' \
+' ' \
+'# Create the lock file' \
+'touch "$QUEUE_LOCKFILE"' \
+' ' \
+'# Ensure the lock file is removed on exit' \
+'trap "rm -f $QUEUE_LOCKFILE" EXIT' \
+' ' \
+'# Process the queue' \
+'while IFS= read -r job; do' \
+'    echo "[*] Running job: $job"' \
+'    bash -c "$job"' \
+'    # Remove the processed command from the queue' \
+'    sed -i "1d" /tmp/cron_queue' \
+'done < /tmp/cron_queue' | tee $QUEUE_PROCESSOR > /dev/null
+
+#Resolvers used by massdns
 printf '%s\n' '1.1.1.1' \
 '1.0.0.1' \
 '9.9.9.9' \
 '8.8.8.8' \
 '208.67.222.222' \
-| tee /home/ail-typo-squatting/resolvers.txt > /dev/null
+| tee $RESOLVERS > /dev/null
 
 # Use printf to write the Python script content to the target file
 printf '%s\n' 'import openpyxl' \
