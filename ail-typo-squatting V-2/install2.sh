@@ -10,9 +10,8 @@ SCRIPT_PATH="/home/ail-typo-squatting/autom.sh"
 REPORT_SCRIPT="/home/ail-typo-squatting/report2.py"
 touch "$SCRIPT_PATH"
 touch "$REPORT_SCRIPT"
-# Use printf to create the script content and write it to the target file
-Got it! Here is the script wrapped in a `printf` command with the format you specified:
 
+# Use printf to create the script content and write it to the target file
 printf '%s\n' '#!/bin/bash' \
 ' ' \
 '# Lock file' \
