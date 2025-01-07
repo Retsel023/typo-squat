@@ -3,7 +3,7 @@ apt install -y python3 python3-pip gowitness git subfinder massdns cron at
 
 mkdir /home/ail-typo-squatting
 mkdir /home/ail-typo-squatting/output
-chmod 777 /home/ail-typo-squatting
+chmod 755 /home/ail-typo-squatting
 
 # Define the script path
 SCRIPT_PATH="/home/ail-typo-squatting/auto.sh"
