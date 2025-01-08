@@ -1,5 +1,5 @@
 apt update && apt upgrade -y
-apt install -y python3 python3-pip gowitness git subfinder massdns cron at
+apt install -y python3 python3-pip gowitness git subfinder massdns cron at nano
 
 mkdir /home/ail-typo-squatting
 mkdir /home/ail-typo-squatting/output
