@@ -4,14 +4,6 @@ FROM kalilinux/kali-rolling
 # Set the working directory to /home/ail-typo-squatting
 WORKDIR /home/ail-typo-squatting
 
-# Set the environment variable to avoid interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install tzdata and set the timezone
-RUN apt-get update && apt-get install -y tzdata && \
-    ln -fs /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime && \
-    dpkg-reconfigure -f noninteractive tzdata
-
 # Copy your installation scripts into the container
 COPY install.sh /install.sh
 COPY installapp.sh /installapp.sh
