@@ -1,6 +1,9 @@
 apt update && apt upgrade -y
 apt install -y python3 python3-pip gowitness git subfinder massdns cron at nano
 
+ln -fs /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime
+dpkg-reconfigure -f noninteractive tzdata
+
 mkdir /home/ail-typo-squatting
 mkdir /home/ail-typo-squatting/output
 chmod 755 /home/ail-typo-squatting
