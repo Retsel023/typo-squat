@@ -153,7 +153,8 @@ printf '%s\n' '#!/bin/bash' \
 '    bash -c "$job"' \
 '    # Remove the processed command from the queue' \
 '    sed -i "1d" /tmp/cron_queue' \
-'done < /tmp/cron_queue' | tee $QUEUE_PROCESSOR > /dev/null
+'done < /tmp/cron_queue' | tee "$QUEUE_PROCESSOR" > /dev/null
+chmod +x "$QUEUE_PROCESSOR"
 
 #Resolvers used by massdns
 printf '%s\n' '1.1.1.1' \
@@ -161,7 +162,7 @@ printf '%s\n' '1.1.1.1' \
 '9.9.9.9' \
 '8.8.8.8' \
 '208.67.222.222' \
-| tee $RESOLVERS > /dev/null
+| tee "$RESOLVERS" > /dev/null
 
 # Use printf to write the Python script content to the target file
 printf '%s\n' 'import openpyxl' \
