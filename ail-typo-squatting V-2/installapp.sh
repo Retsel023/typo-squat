@@ -115,4 +115,115 @@ if __name__ == '__main__':
     app.run(debug=True)
 " | tee "$APP" > /dev/null
 
+printf '%s\n' "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"UTF-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+    <title>Dashboard</title>
+</head>
+<body>
+    <h1>Company Folders</h1>
+    <ul>
+        {% for company in company_folders %}
+        <li><a href=\"/files/{{ company }}\">{{ company }}</a></li>
+        {% endfor %}
+    </ul>
+
+    <h2>Upload Domain List</h2>
+    <form action=\"/upload_domain_list\" method=\"post\" enctype=\"multipart/form-data\">
+        <input type=\"file\" name=\"domain_list\" required>
+        <button type=\"submit\">Upload</button>
+    </form>
+
+    <h2>Run Automation</h2>
+    <form action=\"/run_automation\" method=\"post\">
+        <label for=\"domain_list\">Domain List:</label>
+        <input type=\"text\" name=\"domain_list\" required>
+        <br>
+        <label for=\"company_name\">Company Name:</label>
+        <input type=\"text\" name=\"company_name\" required>
+        <br>
+        <button type=\"submit\">Run Automation</button>
+    </form>
+</body>
+</html>
+" | tee "$INDEX" > /dev/null
+
+printf '%s\n' "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"UTF-8\">
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+    <title>Upload Domain List</title>
+</head>
+<body>
+    <h1>Upload Domain List</h1>
+    <form action=\"/upload_domain_list\" method=\"post\" enctype=\"multipart/form-data\">
+        <input type=\"file\" name=\"domain_list\" required>
+        <button type=\"submit\">Upload</button>
+    </form>
+    <a href=\"/\">Back to dashboard</a>
+</body>
+</html>
+" | tee "$UPLOAD" > /dev/null
+
+printf '%s\n' "<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+    <meta charset=\"UTF-8\">
+    <title>Files for {{ company_name }}</title>
+    <style>
+        .folder {
+            cursor: pointer;
+            margin-left: 20px;
+        }
+        .files {
+            display: none;
+            margin-left: 20px;
+        }
+    </style>
+    <script>
+        function toggleFolder(folderId) {
+            var files = document.getElementById(folderId);
+            if (files.style.display === \"none\") {
+                files.style.display = \"block\";
+            } else {
+                files.style.display = \"none\";
+            }
+        }
+    </script>
+</head>
+<body>
+    <h1>Files for {{ company_name }}</h1>
+
+    <h2>Root Folder</h2>
+    <ul>
+        {% for file in folder_structure.Root.files %}
+            <li><a href=\"{{ url_for('download_file', company_name=company_name, file_path=file) }}\">{{ file }}</a></li>
+        {% endfor %}
+    </ul>
+
+    {% macro render_folder(folder, folder_id) %}
+        <div class=\"folder\" onclick=\"toggleFolder('{{ folder_id }}')\">
+            {{ folder_id }}
+        </div>
+        <div class=\"files\" id=\"{{ folder_id }}\">
+            <ul>
+                {% for file in folder.files %}
+                    <li><a href=\"{{ url_for('download_file', company_name=company_name, file_path=folder_id + '/' + file) }}\">{{ file }}</a></li>
+                {% endfor %}
+            </ul>
+            {% for subfolder, subcontent in folder.subfolders.items() %}
+                {{ render_folder(subcontent, folder_id + '/' + subfolder) }}
+            {% endfor %}
+        </div>
+    {% endmacro %}
+
+    {% for subfolder, subcontent in folder_structure.Root.subfolders.items() %}
+        {{ render_folder(subcontent, subfolder) }}
+    {% endfor %}
+</body>
+</html>
+" | tee "$COMPANY" > /dev/null
 
