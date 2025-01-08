@@ -112,7 +112,7 @@ def download_file(company_name, file_path):
     return send_from_directory(directory, filename, as_attachment=True)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
 " | tee "$APP" > /dev/null
 
 printf '%s\n' "<!DOCTYPE html>
