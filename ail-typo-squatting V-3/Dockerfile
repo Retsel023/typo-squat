@@ -4,18 +4,29 @@ FROM kalilinux/kali-rolling
 # Set the working directory to /home/ail-typo-squatting
 WORKDIR /home/ail-typo-squatting
 
+# Set the environment variable to avoid interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install tzdata and set the timezone
+RUN apt-get update && apt-get install -y tzdata && \
+    ln -fs /usr/share/zoneinfo/Europe/Amsterdam /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata
+
 # Copy your installation scripts into the container
 COPY install.sh /install.sh
 COPY installapp.sh /installapp.sh
+
+# Copy the domainlists folder to /home/ail-typo-squatting
+COPY domainlists /home/ail-typo-squatting/domainlists
+
+# Copy the crontab file to cron.d (for system-wide jobs)
+COPY my-crontab /etc/cron.d/my-crontab
 
 # Make the installation scripts executable
 RUN chmod +x /install.sh /installapp.sh
 
 # Run the installation scripts
 RUN /install.sh && /installapp.sh
-
-# Add crontab file to cron.d (for system-wide jobs)
-COPY my-crontab /etc/cron.d/my-crontab
 
 # Give the correct permissions to the cron file
 RUN chmod 0644 /etc/cron.d/my-crontab
