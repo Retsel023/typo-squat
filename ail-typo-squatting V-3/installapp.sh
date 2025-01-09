@@ -1,4 +1,4 @@
-pip install flask werkzeug --break-system-packages
+pip install flask werkzeug flash pandas --break-system-packages
 
 APP="/home/ail-typo-squatting/app.py"
 TEMPLATES="/home/ail-typo-squatting/templates"
