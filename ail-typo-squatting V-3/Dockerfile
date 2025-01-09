@@ -30,4 +30,4 @@ RUN crontab /home/ail-typo-squatting/my-crontab.txt
 EXPOSE 5000
 
 # Start cron service and your app from the correct directory
-CMD service cron start && rm /tmp/cron_queue && pyhton3 /home/ail-typo-squatting/app.py & tail -f /dev/null
+CMD service cron start && rm /tmp/cron_queue && pyhton3 /home/ail-typo-squatting/automate.lock & tail -f /dev/null
