@@ -21,7 +21,7 @@ RUN chmod +x /install.sh /installapp.sh
 RUN /install.sh && /installapp.sh
 
 # Give the correct permissions to the cron file
-RUN chmod 0644 /etc/cron.d/my-crontab
+RUN chmod 0644 /home/ail-typo-squatting/my-crontab.txt
 
 # Apply the cron job file to the crontab
 RUN crontab /home/ail-typo-squatting/my-crontab.txt
