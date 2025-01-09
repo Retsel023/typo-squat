@@ -12,7 +12,7 @@ COPY installapp.sh /installapp.sh
 COPY domainlists /home/ail-typo-squatting/domainlists
 
 # Copy the crontab file to cron.d (for system-wide jobs)
-COPY my-crontab /etc/cron.d/my-crontab
+COPY my-crontab.txt /home/ail-typo-squatting/my-crontab.txt
 
 # Make the installation scripts executable
 RUN chmod +x /install.sh /installapp.sh
@@ -24,7 +24,7 @@ RUN /install.sh && /installapp.sh
 RUN chmod 0644 /etc/cron.d/my-crontab
 
 # Apply the cron job file to the crontab
-RUN crontab /etc/cron.d/my-crontab
+RUN crontab /home/ail-typo-squatting/my-crontab.txt
 
 # Expose port 5000 internally and map it to port 80 externally
 EXPOSE 5000
