@@ -13,10 +13,12 @@ SCRIPT_PATH="/home/ail-typo-squatting/auto.sh"
 REPORT_SCRIPT="/home/ail-typo-squatting/report2.py"
 QUEUE_PROCESSOR="/home/ail-typo-squatting/queue_processor.sh"
 RESOLVERS="/home/ail-typo-squatting/resolvers.txt"
+#CRON="/home/ail-typo-squatting/my-crontab"
 touch "$SCRIPT_PATH"
 touch "$REPORT_SCRIPT"
 touch "$QUEUE_PROCESSOR"
 touch "$RESOLVERS"
+#touch "$CRON"
 
 # Use printf to create the script content and write it to the target file
 printf '%s\n' '#!/bin/bash' \
@@ -45,7 +47,8 @@ printf '%s\n' '#!/bin/bash' \
 ' ' \
 '# Input arguments' \
 'DOMAIN_LIST="$1"' \
-'OUTPUT_FOLDER="$2"' \
+'OUTPUT_FOLDER=$(echo "$2" | tr -d "\r")' \
+' ' \
 'BACKUP_FOLDER="$OUTPUT_FOLDER/backups"' \
 ' ' \
 '# Debug statements to confirm input arguments' \
@@ -272,6 +275,13 @@ printf '%s\n' 'import openpyxl' \
 'wb.save(output_report)' \
 'print(f"Security report saved as {output_report}")' \
 | tee "$REPORT_SCRIPT" > /dev/null
+
+#printf '%s\n' '# m h  dom mon dow   command' \
+#'#55 16 * * * /home/ail-typo-squatting/auto.sh /home/ail-typo-squatting/domainlists/clazing.txt /home/ail-typo-squatting/output/clazing' \
+#'#35 16 * * * /home/ail-typo-squatting/auto.sh /home/ail-typo-squatting/domainlists/capturetech.txt /home/ail-typo-squatting/output/capturetech' \
+#'* * * * * /home/ail-typo-squatting/queue_processor.sh' \
+#| tee "$CRON" > /dev/null
+#chmod 644 "$CRON"
 
 git clone https://github.com/typosquatter/ail-typo-squatting.git /home/ail-typo-squatting/ail-typo-squatting
 #pip install -r /home/ail-typo-squatting/ail-typo-squatting/requirements.txt
