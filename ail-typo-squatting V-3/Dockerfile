@@ -12,7 +12,7 @@ COPY installapp.sh /installapp.sh
 COPY domainlists /home/ail-typo-squatting/domainlists
 
 # Copy the crontab file to cron.d (for system-wide jobs)
-COPY my-crontab.txt /home/ail-typo-squatting/my-crontab.txt
+COPY my-crontab /home/ail-typo-squatting/my-crontab
 
 # Make the installation scripts executable
 RUN chmod +x /install.sh /installapp.sh
@@ -21,13 +21,13 @@ RUN chmod +x /install.sh /installapp.sh
 RUN /install.sh && /installapp.sh
 
 # Give the correct permissions to the cron file
-RUN chmod 0644 /home/ail-typo-squatting/my-crontab.txt
+RUN chmod 0644 /home/ail-typo-squatting/my-crontab
 
 # Apply the cron job file to the crontab
-RUN crontab /home/ail-typo-squatting/my-crontab.txt
+RUN crontab /home/ail-typo-squatting/my-crontab
 
 # Expose port 5000 internally and map it to port 80 externally
 EXPOSE 5000
 
 # Start cron service and your app from the correct directory
-CMD service cron start && rm /tmp/cron_queue && pyhton3 /home/ail-typo-squatting/automate.lock & tail -f /dev/null
+CMD rm /tmp/automate.lock ; rm /tmp/queue_processor.lock ; service cron start && python3 /home/ail-typo-squatting/app.py & tail -f /dev/null
