@@ -27,7 +27,7 @@ class StoreTests(unittest.TestCase):
         self.project = self.store.create_project("Example", ["EXAMPLE.com."])
         self.project_id = self.project["id"]
 
-    def scan(self, observations, *, seeds=None, candidates=None, sources=None, provenance=None, screenshots=None):
+    def scan(self, observations, *, seeds=None, candidates=None, sources=None, provenance=None, screenshots=None, generation=None):
         run = self.store.start_run(self.project_id)
         return self.store.finish_run(
             run["id"], seeds=seeds if seeds is not None else ["example.com"],
@@ -35,6 +35,7 @@ class StoreTests(unittest.TestCase):
             observations=observations, source_status=SUCCESS if sources is None else sources,
             provenance=provenance,
             screenshots=screenshots,
+            generation=generation,
         )
 
     def domain(self, domain="typo.example"):
@@ -478,6 +479,89 @@ class StoreTests(unittest.TestCase):
             screenshots={"typo.example": [{**CAPTURE, "title": "Other project"}]})
         self.assertEqual([capture["run_id"] for capture in self.store.list_captures(self.project_id, "typo.example")], [first["id"]])
         self.assertEqual(self.store.get_domain(other["id"], "typo.example")["screenshots"][0]["title"], "Other project")
+
+    def test_generation_cache_is_durable_per_signature_and_project(self):
+        signature = "ail:1.2.3/settings:all"
+        self.assertEqual(self.store.generation_cache(self.project_id, signature), set())
+        self.scan({"typo.example": POSITIVE}, provenance={"typo.example": ["example.com"]},
+                  generation={"signature": signature, "seeds": ["EXAMPLE.com.", "example.com"]})
+        reopened = Store(self.temp.name)
+        self.assertEqual(reopened.generation_cache(self.project_id, signature), {"example.com"})
+        self.assertEqual(reopened.get_domain(self.project_id, "typo.example")["sources"], ["example.com"])
+        self.assertEqual(reopened.generation_cache(self.project_id, "ail:1.2.4/settings:all"), set())
+        self.assertEqual(reopened.generation_cache(self.project_id, "ail:1.2.3/settings:subset"), set())
+        other = reopened.create_project("Separate", ["example.com"])
+        self.assertEqual(reopened.generation_cache(other["id"], signature), set())
+
+    def test_generation_markers_accumulate_only_successfully_accepted_new_seeds(self):
+        signature = "generator-v1"
+        self.scan({"typo.example": POSITIVE}, generation={"signature": signature, "seeds": ["example.com"]})
+        self.scan({"typo.example": POSITIVE, "portal-typo.example": POSITIVE},
+                  seeds=["example.com", "portal.example.com"],
+                  provenance={"portal-typo.example": ["portal.example.com"]},
+                  generation={"signature": signature, "seeds": ["portal.example.com"]})
+        # A later discovery sample can omit a seed without discarding its cache.
+        self.scan({"typo.example": POSITIVE, "portal-typo.example": POSITIVE})
+        self.assertEqual(self.store.generation_cache(self.project_id, signature), {"example.com", "portal.example.com"})
+        self.assertEqual(self.domain("portal-typo.example")["sources"], ["portal.example.com"])
+
+    def test_partial_dns_run_retains_successful_generation_without_requiring_dns_baseline(self):
+        run = self.scan({"typo.example": UNKNOWN},
+                        sources={"generator": {"status": "ok"}, "dns": {"status": "partial"}},
+                        generation={"signature": "generator-v1", "seeds": ["example.com"]})
+        self.assertEqual(run["status"], "partial")
+        self.assertFalse(run["is_baseline"])
+        self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), {"example.com"})
+
+    def test_existing_inventory_does_not_fabricate_generation_markers(self):
+        self.scan({"typo.example": POSITIVE})
+        self.assertEqual(Store(self.temp.name).generation_cache(self.project_id, "generator-v1"), set())
+        pending = self.store.start_run(self.project_id)
+        self.store.fail_run(pending["id"], "Cancelled after permutation generation")
+        self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), set())
+
+    def test_late_database_failure_rolls_back_generation_inventory_and_provenance_together(self):
+        self.scan({"typo.example": POSITIVE}, generation={"signature": "generator-v1", "seeds": ["example.com"]})
+        previous_inventory = self.store.inventory(self.project_id)
+        previous_domains = self.store.get_domains(self.project_id)
+        pending = self.store.start_run(self.project_id)
+        with self.store._connection(write=True) as db:
+            db.execute("""CREATE TRIGGER reject_finish BEFORE UPDATE OF status ON runs
+                WHEN NEW.status IN ('completed','partial') BEGIN SELECT RAISE(ABORT,'fixture write failure'); END""")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "fixture write failure"):
+            self.store.finish_run(pending["id"], seeds=["portal.example.com"], candidates=["portal-typo.example"],
+                observations={"typo.example": POSITIVE, "portal-typo.example": POSITIVE}, source_status=SUCCESS,
+                provenance={"portal-typo.example": ["portal.example.com"]},
+                generation={"signature": "generator-v1", "seeds": ["portal.example.com"]})
+        self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), {"example.com"})
+        self.assertEqual(self.store.inventory(self.project_id), previous_inventory)
+        self.assertEqual(self.store.get_domains(self.project_id), previous_domains)
+        self.assertEqual(self.store.get_run(pending["id"])["status"], "running")
+        with self.store._connection(write=True) as db:
+            db.execute("DROP TRIGGER reject_finish")
+        self.store.fail_run(pending["id"], "Acceptance failed")
+
+    def test_invalid_generation_seed_scope_rolls_back_new_inventory(self):
+        pending = self.store.start_run(self.project_id)
+        with self.assertRaisesRegex(ValueError, "seed inventory"):
+            self.store.finish_run(pending["id"], seeds=["portal.example.com"], candidates=["typo.example"],
+                observations={"typo.example": POSITIVE}, source_status=SUCCESS,
+                generation={"signature": "generator-v1", "seeds": ["outside.example"]})
+        self.assertEqual(self.store.inventory(self.project_id), {"seeds": ["example.com"], "candidates": []})
+        self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), set())
+        self.store.fail_run(pending["id"], "Invalid generation scope")
+
+    def test_generation_metadata_validation_does_not_accept_malformed_cache_keys(self):
+        for generation in ([], {}, {"signature": "", "seeds": []}, {"signature": "  ", "seeds": []},
+                           {"signature": "generator-v1", "seeds": "example.com"},
+                           {"signature": "generator-v1", "seeds": ["https://example.com"]}):
+            with self.subTest(generation=generation):
+                pending = self.store.start_run(self.project_id)
+                with self.assertRaises(ValueError):
+                    self.store.finish_run(pending["id"], seeds=["example.com"], candidates=["typo.example"],
+                        observations={"typo.example": POSITIVE}, source_status=SUCCESS, generation=generation)
+                self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), set())
+                self.store.fail_run(pending["id"], "Invalid generation metadata")
 
 
 if __name__ == "__main__":

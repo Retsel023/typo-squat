@@ -65,6 +65,42 @@ class DnsTests(unittest.TestCase):
 
 
 class ToolTests(unittest.TestCase):
+    def test_generation_cache_profile_changes_with_output_inputs_not_timeouts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = ["tldextract/.tld_set_snapshot", "ail_typo_squatting/etc/common-misspellings.json",
+                     "ail_typo_squatting/etc/homophones.txt", "ail_typo_squatting/etc/tlds-alpha-by-domain.txt"]
+            for name in paths:
+                resource = root / name
+                resource.parent.mkdir(parents=True, exist_ok=True)
+                resource.write_text("fixture", encoding="utf-8")
+            packages = {"ail-typo-squatting": SimpleNamespace(version="fixture-ail", locate_file=lambda name: root / name),
+                        "tldextract": SimpleNamespace(version="fixture-psl", locate_file=lambda name: root / name)}
+            with (patch("typo_monitor.adapters.distribution", side_effect=lambda name: packages[name]),
+                  patch("typo_monitor.adapters.version", return_value="fixture-inflect") as dependency_version):
+                baseline = AilGenerator(timeout=1).cache_signature()
+                self.assertEqual(AilGenerator(timeout=999).cache_signature(), baseline)
+                for name in paths:
+                    resource = root / name
+                    resource.write_text("changed fixture", encoding="utf-8")
+                    self.assertNotEqual(AilGenerator().cache_signature(), baseline, name)
+                    resource.write_text("fixture", encoding="utf-8")
+                packages["ail-typo-squatting"].version = "updated-ail"
+                self.assertNotEqual(AilGenerator().cache_signature(), baseline)
+                packages["ail-typo-squatting"].version = "fixture-ail"
+                packages["tldextract"].version = "updated-psl"
+                self.assertNotEqual(AilGenerator().cache_signature(), baseline)
+                packages["tldextract"].version = "fixture-psl"
+                dependency_version.return_value = "updated-inflect"
+                self.assertNotEqual(AilGenerator().cache_signature(), baseline)
+
+    def test_missing_generation_profile_resource_cannot_reuse_an_old_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = SimpleNamespace(version="fixture", locate_file=lambda name: Path(directory) / name)
+            with patch("typo_monitor.adapters.distribution", return_value=package):
+                with self.assertRaises(FileNotFoundError):
+                    AilGenerator().cache_signature()
+
     def test_subfinder_keeps_partial_in_scope_results_and_records_failure(self):
         def run(args, **kwargs):
             self.assertEqual(args, ["test-subfinder", "-d", "example.com", "-silent"])

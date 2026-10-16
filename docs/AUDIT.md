@@ -8,7 +8,18 @@ The main problem is changing scan coverage, not Docker. V3 moves the previous re
 
 [Subfinder describes itself as passive enumeration](https://github.com/projectdiscovery/subfinder). Its sources, API credentials, and time limits affect results. Its [documented flags](https://docs.projectdiscovery.io/opensource/subfinder/usage) include source selection, JSONL output, collected source names, and timeouts. Adding `-all` may increase coverage; it cannot establish that a missing name was deleted.
 
-A trustworthy comparison needs persistent inventory plus explicit observations. Keep previously known seeds and candidates and recheck them directly. Record the difference between “not rediscovered”, “not checked”, “DNS lookup failed”, “NXDOMAIN”, and “NOERROR with no answer”. Keep the last successful observation through transient failures. Compare only compatible query types, resolver settings, generation configuration, and scope. A newly generated candidate is “newly monitored”; reserve “newly resolving” for a candidate with an earlier comparable negative observation.
+A trustworthy comparison needs persistent inventory plus explicit observations. Keep previously known seeds and candidates and recheck them directly. Record the difference between “not rediscovered”, “not checked”, “DNS lookup failed”, “NXDOMAIN”, and “NOERROR with no answer”. Keep the last successful observation through transient failures. Compare DNS observations only under compatible query types, resolver settings and scope. Record generation configuration separately to explain changes in monitored coverage. A newly generated candidate is “newly monitored”; reserve “newly resolving” for a candidate with an earlier comparable negative observation.
+
+The replacement application also separates permutation generation from repeated
+DNS observation. It records a successful generation fingerprint for each
+normalized seed in SQLite and generates again only for a new seed or changed
+generator inputs. The profile includes AIL/mode/flags, tldextract and inflect
+versions, bundled suffix/data content hashes and an implementation epoch.
+Successful markers publish atomically with accepted inventory/provenance;
+failures preserve the prior inventory. Existing databases/imports regenerate
+retained seeds once because old inventory alone cannot prove which generator
+profile completed. See [incremental generation](DISCOVERY.md#incremental-permutation-generation).
+
 
 ## Confirmed legacy defects
 
@@ -37,7 +48,7 @@ The intended host is a Linux server, with Docker providing an isolated test envi
 | Subfinder | Its [release build configuration](https://github.com/projectdiscovery/subfinder/blob/dev/.goreleaser.yml) includes Windows, Linux, and macOS. | Include a pinned executable in the Linux image; use argument lists, capture exit status/stderr, save JSONL and source provenance, and record the installed version. |
 | MassDNS | Its [README](https://github.com/blechschmidt/massdns) documents non-Linux builds and Windows through Cygwin. It defaults to A and offers NDJSON with terminal failures (`-o Je`). | Start with a Python DNS backend and bounded concurrency. MassDNS remains a possible bulk adapter if measured workload size justifies it; preserve query identity and explicit failure results. |
 | gowitness | Its [README](https://github.com/sensepost/gowitness) supports Linux/macOS and describes Windows support as mostly working. Chrome is required. The [file command source](https://github.com/sensepost/gowitness/blob/master/cmd/scan_file.go) says metadata needs explicit `--write-*` flags. | Keep capture independent of DNS success and read metadata rather than infer filenames. The replacement image now includes pinned Gowitness 3.2.2 and Chromium; native setups supply these binaries separately. See [capture integration](SCREENSHOTS.md). |
-| AIL typo generator | The [upstream README](https://github.com/typosquatter/ail-typo-squatting) documents a pip-installable Python library, specific algorithms, and `runAll`. | Include `ail-typo-squatting==2.7.6` to preserve algorithm coverage. Persist generator version/settings and freeze existing candidate sets. A small replacement generator is not equivalent to all upstream algorithms. |
+| AIL typo generator | The [upstream README](https://github.com/typosquatter/ail-typo-squatting) documents a pip-installable Python library, specific algorithms, and `runAll`. | Include `ail-typo-squatting==2.7.6` to preserve algorithm coverage. Persist generation per seed/profile and retain existing candidate sets. Reuse completed permutations until the seed or generator inputs change. A small replacement generator is not equivalent to all upstream algorithms. |
 | cron/Bash/Kali | These dependencies come from the legacy orchestration and installers, rather than the comparison problem. | Replace orchestration with Python and a persistent job queue. Use a normal slim Python image and one production WSGI application process. Add scheduling against the same job interface later. |
 
 The replacement Dockerfile uses `python:3.12-slim-bookworm`, runs as UID/GID 10001, and stores application state under `/data`. Compose supplies a named volume, init process, restart policy, read-only application filesystem, temporary `/tmp`, and a loopback-only port mapping for testing or a local reverse proxy. The image healthcheck calls `/health` using Python; it does not invoke a scanner. A single foreground application process makes exit and restart behavior observable.

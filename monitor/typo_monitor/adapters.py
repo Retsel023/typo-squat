@@ -1,9 +1,11 @@
 """Bounded external discovery/generation and explicit DNS observation results."""
 
 from concurrent.futures import ThreadPoolExecutor
-from importlib.metadata import version
+from importlib.metadata import distribution, version
 from pathlib import Path
+import hashlib
 import ipaddress
+import json
 import shutil
 import subprocess
 import sys
@@ -80,6 +82,33 @@ class Subfinder:
 class AilGenerator:
     def __init__(self, timeout=900):
         self.timeout = timeout
+
+    def cache_signature(self):
+        """Fingerprint only inputs that can alter generated candidate names.
+
+        Resource lookup uses package metadata without importing AIL or starting
+        an extractor. Missing dependencies/data fail visibly rather than sharing
+        a permissive fallback key with an older successful generation.
+        """
+        ail = distribution("ail-typo-squatting")
+        suffixes = distribution("tldextract")
+        resources = {
+            "tldextract/.tld_set_snapshot": Path(suffixes.locate_file("tldextract/.tld_set_snapshot")),
+            **{f"ail/{name}": Path(ail.locate_file(f"ail_typo_squatting/etc/{name}"))
+               for name in ("common-misspellings.json", "homophones.txt", "tlds-alpha-by-domain.txt")},
+        }
+        profile = {
+            "adapter_revision": 1,
+            "algorithm": "runAll",
+            "keep_original": True,
+            "max_results": "unlimited",
+            "suffix_source": "bundled; no online updates",
+            "ail_version": ail.version,
+            "tldextract_version": suffixes.version,
+            "inflect_version": version("inflect"),
+            "resources": {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in resources.items()},
+        }
+        return hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def generate(self, seeds, workdir):
         self.provenance = {seed: [seed] for seed in seeds}

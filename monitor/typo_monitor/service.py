@@ -154,9 +154,30 @@ class MonitorService:
                 source_status["discovery"] = {"status": "skipped", "detail": "Discovery explicitly disabled; retained seeds still checked."}
             seeds = sorted(set(project["roots"]) | set(old["seeds"]) | set(discovered))
             self._check_shutdown()
-            # Never replace yesterday's search space with today's passive sample.
-            generated, source_status["generator"] = self.generator.generate(seeds, workdir)
+            # Generation is deterministic per seed/profile. The candidate and
+            # source inventory is already durable; only ungenerated seeds need
+            # permutations. Unknown adapters must explicitly opt in to caching.
+            signature_method = getattr(self.generator, "cache_signature", None)
+            signature = signature_method() if callable(signature_method) else None
+            cached = self.store.generation_cache(project_id, signature) if callable(signature_method) else set()
+            pending = [seed for seed in seeds if seed not in cached]
+            generated, provenance, generation = [], {}, None
+            if pending:
+                generated, generator_status = self.generator.generate(pending, workdir)
+                provenance = getattr(self.generator, "provenance", {})
+                if signature is not None and generator_status.get("status") == "ok":
+                    generation = {"signature": signature, "seeds": pending}
+                generator_status = dict(generator_status)
+                generator_status["detail"] = (generator_status.get("detail", "Permutation generation completed.")
+                    + f" Generated {len(pending)} seeds; reused {len(seeds) - len(pending)} previously generated seeds.")
+            else:
+                generator_status = {"status": "ok", "detail": "All seeds were already generated with this profile; reused saved candidate inventory."}
+            source_status["generator"] = {**generator_status, "generated_seeds": len(pending),
+                                           "reused_seeds": len(seeds) - len(pending), "signature": signature}
+            (workdir / "generation.json").write_text(json.dumps({"signature": signature, "generated_seeds": pending,
+                "reused_seeds": [seed for seed in seeds if seed in cached]}, indent=2), encoding="utf-8")
             self._check_shutdown()
+            # Never replace yesterday's search space with today's passive sample.
             candidates = sorted(set(old["candidates"]) | set(generated) | set(seeds))
             if len(candidates) > self.max_candidates:
                 raise RuntimeError(f"{len(candidates):,} candidates exceed the configured {self.max_candidates:,} limit. Increase --max-candidates; inventory was not truncated.")
@@ -174,7 +195,6 @@ class MonitorService:
                     "likely_parked": sum(o.get("parking", {}).get("status") == "likely_parked" for o in observations.values()),
                     "uncertain": sum(o.get("parking", {}).get("status") == "unknown" for o in observations.values() if o["status"] == "resolved")}
             (workdir / "observations.json").write_text(json.dumps(observations, indent=2), encoding="utf-8")
-            provenance = getattr(self.generator, "provenance", {})
             (workdir / "provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
             screenshots = None
             if self.capturer:
@@ -202,7 +222,7 @@ class MonitorService:
                 source_status["screenshots"] = {"status": "skipped", "detail": "Capture explicitly disabled or supplied test resolver has no capture adapter."}
             result = self.store.finish_run(run_id, seeds=seeds, candidates=candidates,
                                            observations=observations, source_status=source_status, provenance=provenance,
-                                           screenshots=screenshots)
+                                           screenshots=screenshots, generation=generation)
             LOG.info("Run %s %s: %d candidates", run_id, result["status"], len(candidates))
             return result
         except Exception as exc:

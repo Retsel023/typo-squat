@@ -108,6 +108,12 @@ class Store:
                     ON captures(project_id,domain,scheme,captured_at DESC);
                 CREATE INDEX IF NOT EXISTS captures_by_domain
                     ON captures(project_id,domain,captured_at DESC);
+                CREATE TABLE IF NOT EXISTS generation_markers (
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    signature TEXT NOT NULL, seed TEXT NOT NULL,
+                    run_id TEXT NOT NULL REFERENCES runs(id), generated_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id,signature,seed)
+                );
             """)
         # Existing development databases predate resolver-scope persistence.
         # Serialize the inspection and ALTER to make concurrent startup safe.
@@ -359,6 +365,24 @@ class Store:
             return {"seeds": [r["domain"] for r in rows if r["kind"] == "seed"],
                     "candidates": [r["domain"] for r in rows if r["kind"] == "candidate"]}
 
+    @staticmethod
+    def _generation_signature(signature):
+        if not isinstance(signature, str) or not signature.strip() or len(signature) > 4096:
+            raise ValueError("Generation signature must be nonempty text of at most 4096 characters.")
+        return signature
+
+    def generation_cache(self, project_id, signature):
+        """Return seeds whose results for this generator signature were accepted.
+
+        Candidate inventory and provenance remain the cached results. This
+        marker alone never treats an interrupted or unaccepted run as cached.
+        """
+        signature = self._generation_signature(signature)
+        with self._connection() as db:
+            self._require_project(db, project_id)
+            return {row[0] for row in db.execute(
+                "SELECT seed FROM generation_markers WHERE project_id=? AND signature=?", (project_id, signature))}
+
     def start_run(self, project_id):
         with self._connection(write=True) as db:
             self._require_project(db, project_id)
@@ -377,7 +401,7 @@ class Store:
                 return False
         return True
 
-    def finish_run(self, run_id, *, seeds, candidates, observations, source_status, missing_threshold=2, provenance=None, screenshots=None):
+    def finish_run(self, run_id, *, seeds, candidates, observations, source_status, missing_threshold=2, provenance=None, screenshots=None, generation=None):
         """Accept a scan atomically, retaining every previously known candidate.
 
         An omitted domain is unchecked, never absent. Unknown checks interrupt
@@ -389,6 +413,14 @@ class Store:
             raise ValueError("Source status and observations must be mappings.")
         seeds = sorted({normalize_domain(domain) for domain in seeds})
         candidates = sorted({normalize_domain(domain) for domain in candidates})
+        generation_signature, generated_seeds = None, set()
+        if generation is not None:
+            if not isinstance(generation, Mapping):
+                raise ValueError("Generation metadata must be a mapping.")
+            generation_signature = self._generation_signature(generation.get("signature"))
+            if not isinstance(generation.get("seeds"), (list, tuple, set, frozenset)):
+                raise ValueError("Generated seeds must be a list of domain names.")
+            generated_seeds = {normalize_domain(seed) for seed in generation["seeds"]}
         normalized_screenshots = self._normalize_screenshots(screenshots)
         if provenance is not None and not isinstance(provenance, Mapping):
             raise ValueError("Candidate provenance must be a mapping.")
@@ -438,6 +470,8 @@ class Store:
             if not normalized_screenshots.keys() <= candidate_set:
                 raise ValueError("Screenshots must belong to the candidate inventory.")
             seed_set = {row[0] for row in db.execute("SELECT domain FROM inventory WHERE project_id=? AND kind='seed'", (project_id,))}
+            if not generated_seeds <= seed_set:
+                raise ValueError("Generation markers must belong to the seed inventory.")
             if (not normalized_provenance.keys() <= candidate_set
                     or any(not sources <= seed_set for sources in normalized_provenance.values())):
                 raise ValueError("Provenance must link known candidates to known seed domains.")
@@ -527,6 +561,10 @@ class Store:
                     counts["images_" + image_change] = sum(attempt["visual"].get("change") == image_change for _, attempt in attempts)
             complete = self._sources_complete(source_status) and not counts["unknown"] and not counts["unchecked"]
             status = "completed" if complete else "partial"
+            if generation_signature is not None:
+                db.executemany("""INSERT OR IGNORE INTO generation_markers
+                    (project_id,signature,seed,run_id,generated_at) VALUES(?,?,?,?,?)""",
+                    [(project_id, generation_signature, seed, run_id, finished_at) for seed in sorted(generated_seeds)])
             db.execute("""UPDATE runs SET status=?,finished_at=?,is_baseline=?,events_json=?,counts_json=?,
                 source_status_json=? WHERE id=?""", (status, finished_at, baseline and informative, _json(events), _json(counts), source_json, run_id))
             if baseline and informative:

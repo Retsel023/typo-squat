@@ -2,7 +2,7 @@
 
 Linux server monitoring with Docker as an isolated test/deployment environment.
 Python owns orchestration, persistent state, DNS checks, and the web interface.
-AIL supplies the full permutation algorithms; Subfinder remains an optional
+AIL supplies its `runAll` permutation algorithms; Subfinder remains an optional
 passive discovery adapter.
 
 For a separate local profile and a preview of optional AI handoff volume, use
@@ -71,8 +71,10 @@ Native Windows compatibility has not been tested; Linux is the target.
 
 ## What comparisons mean
 
-* Roots and previously discovered seeds are retained. Candidates are the union
-  of previous inventory and current AIL output, rather than a replacement.
+* Roots and previously discovered seeds are retained. AIL generates only for new
+  seeds or a changed generator fingerprint; later scans reuse their saved
+  permutations. Candidates remain the union of previous inventory and newly
+  generated output. Every saved candidate is still checked by DNS each scan.
 * Every candidate receives explicit A, AAAA, and CNAME observations. TTL, record
   order, duplicates, hostname case, and trailing dots do not produce changes.
   Query owners remain distinct from CNAME targets.
@@ -130,6 +132,18 @@ fails a run rather than truncating coverage. AIL generation has a 15-minute
 timeout; each root's Subfinder call has a 3-minute timeout. Python DNS trades
 MassDNS speed for explicit error handling; tune workers for the resolver/server.
 
+
+Permutation completion is cached in SQLite per seed and generator profile. The
+fingerprint covers AIL version/mode/settings, tldextract and inflect versions,
+bundled suffix/data hashes and the adapter implementation epoch. Changing those
+inputs regenerates retained seeds; adding one discovered seed generates only
+that seed. Generation markers publish with the accepted inventory/provenance in
+one transaction, so failed or interrupted runs do not poison the cache. Existing
+databases and imported inventories regenerate retained seeds once after upgrade
+because they have no trusted completion markers. Historical candidates remain
+monitored even if an updated generator produces fewer names. See
+[incremental generation](../docs/DISCOVERY.md#incremental-permutation-generation).
+
 ## Bring forward legacy inventory
 
 Stop the app first and use a new project name:
@@ -160,8 +174,9 @@ The demo is explicitly simulated and makes no external queries. Simulated
 projects cannot be scanned or scheduled, so fixture DNS cannot become a live
 comparison baseline. Use a separate data directory for previews.
 
-Each real run has a UUID folder under `data/runs`, with candidates, generated
-output, tool logs, source metadata, and raw observations. SQLite is the source of
+Each real run has a UUID folder under `data/runs`, with candidates, source
+metadata and raw observations. Runs that generate new permutations also retain
+the generated output and tool log; unchanged seeds reuse SQLite inventory. SQLite is the source of
 truth for projects, comparison state, observations, and events. CSV exports the
 current inventory with last-known records and uncertainty; it is not a baseline.
 
@@ -172,7 +187,7 @@ Source groups trace each candidate back to the input domain or subdomain that
 generated it; candidates can belong to multiple groups. Full inventory and
 uncertain/absent results remain available through the filters and are rechecked
 on subsequent scans. Legacy candidates with no generation provenance are shown
-as Unattributed until a fresh generation supplies that association.
+as Unattributed until their first fresh generation supplies that association.
 
 An optional **Hide likely parked** filter uses parking-specific NS/CNAME evidence
 from known providers. Its evidence is inspectable; ordinary GoDaddy DNS and
