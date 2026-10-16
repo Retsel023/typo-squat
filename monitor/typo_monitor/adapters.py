@@ -89,23 +89,37 @@ def _run_command(args, *, cancel_event=None, timeout, on_tick=None, **kwargs):
 class Subfinder:
     name = "Subfinder"
 
-    def __init__(self, executable=None, timeout=180):
+    def __init__(self, executable=None, timeout=180, all_sources=False):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("Discovery timeout must be a positive number of seconds.")
-        self.executable = executable or shutil.which("subfinder")
+        located = shutil.which(str(executable or "subfinder"))
+        self.executable = str(Path(located).resolve()) if located else None
         self.timeout = timeout
+        self.all_sources = bool(all_sources)
 
     def discover(self, roots, workdir):
+        event = getattr(self, "cancel_event", None)
+        if event is not None and event.is_set():
+            raise RuntimeError("Scan cancelled or worker shutdown requested; accepted observations were preserved.")
         if not self.executable:
             return [], {"status": "unavailable", "detail": "Subfinder unavailable; retained inventory is still checked."}
+        roots = sorted({normalize_domain(root) for root in roots})
+        callback = getattr(self, "progress_callback", None)
         found, errors = set(), []
         for index, root in enumerate(roots):
+            if event is not None and event.is_set():
+                raise RuntimeError("Scan cancelled or worker shutdown requested; accepted observations were preserved.")
             log = Path(workdir) / f"subfinder-{index}.stderr.log"
             output = Path(workdir) / f"subfinder-{index}.txt"
+            command = [self.executable, "-d", root, "-silent"]
+            if self.all_sources:
+                command.append("-all")
+            _report_progress(callback, "discovery", f"Subfinder: discovering subdomains for {root}.",
+                             current=index, total=len(roots), metrics={"discovered": len(found)})
             try:
                 with output.open("w", encoding="utf-8") as stdout, log.open("w", encoding="utf-8") as stderr:
                     result = _run_command(
-                        [self.executable, "-d", root, "-silent"],
+                        command,
                         stdout=stdout, stderr=stderr, timeout=self.timeout,
                         cancel_event=getattr(self, "cancel_event", None), text=True,
                     )
@@ -114,17 +128,29 @@ class Subfinder:
                     errors.append(f"{root}: exit {result.returncode}; see {log.name}")
             except (OSError, subprocess.TimeoutExpired) as exc:
                 errors.append(f"{root}: {type(exc).__name__}")
+            if event is not None and event.is_set():
+                raise RuntimeError("Scan cancelled or worker shutdown requested; accepted observations were preserved.")
             if output.exists():
-                for raw in output.read_text(encoding="utf-8", errors="replace").splitlines():
-                    try:
-                        domain = normalize_domain(raw)
-                    except ValueError:
-                        continue
-                    if domain == root or domain.endswith("." + root):
-                        found.add(domain)
+                with output.open(encoding="utf-8", errors="replace") as stream:
+                    while raw := stream.readline(64 * 1024 + 1):
+                        if len(raw) > 64 * 1024 or not raw.endswith("\n"):
+                            while raw and not raw.endswith("\n"):
+                                raw = stream.readline(64 * 1024 + 1)
+                            continue
+                        try:
+                            domain = normalize_domain(raw.rstrip("\r\n"))
+                        except ValueError:
+                            continue
+                        if domain == root or domain.endswith("." + root):
+                            found.add(domain)
+            _report_progress(callback, "discovery",
+                f"Subfinder finished {index + 1}/{len(roots)} roots; {len(found):,} in-scope names found.",
+                current=index + 1, total=len(roots), metrics={"discovered": len(found)},
+                level="warning" if errors else "info")
         return sorted(found), {
             "status": "partial" if errors else "ok",
             "engine": self.name,
+            "all_sources": self.all_sources,
             "detail": "; ".join(errors) if errors else "Passive discovery completed; absence is not evidence of removal.",
             "discovered": len(found),
         }

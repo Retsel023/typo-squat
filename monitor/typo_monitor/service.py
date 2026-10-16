@@ -10,8 +10,10 @@ import math
 import threading
 import time
 
-from .adapters import AilGenerator, DnsResolver
+from .adapters import AilGenerator, DnsResolver, Subfinder
+from .assetfinder import Assetfinder
 from .discovery import Amass
+from .discovery_ensemble import CombinedDiscovery
 from .massdns import MassDnsResolver
 from .domains import parse_domains
 from .progress import RunProgress
@@ -96,7 +98,8 @@ class MonitorService:
         # separate from whichever client's value was applied to the last run.
         self.dns_workers = default_workers
         self.generator = generator or AilGenerator()
-        self.discoverer = discoverer or Amass()
+        self.discoverer = discoverer or CombinedDiscovery({
+            "amass": Amass(), "subfinder": Subfinder(all_sources=True), "assetfinder": Assetfinder()})
         if parking_classifier is None and isinstance(self.resolver, DnsResolver):
             from .parking import ParkingClassifier
             parking_classifier = ParkingClassifier(nameservers=self.resolver.nameservers)
@@ -156,11 +159,13 @@ class MonitorService:
             "available": bool(getattr(self.resolver, "executable", None)) if isinstance(self.resolver, MassDnsResolver) else True,
             "detail": ("Requires the bundled MassDNS JSON completeness patch. " if isinstance(self.resolver, MassDnsResolver) else "")
                       + "Fresh A, AAAA and CNAME queries; no automatic backend fallback."}
-        engine = getattr(self.discoverer, "name", type(self.discoverer).__name__)
-        version = getattr(self.discoverer, "version", None)
-        detail = f"Subdomain discovery{(' · requires ' + version) if version else ''}"
-        tools[engine] = {"available": bool(getattr(self.discoverer, "executable", None)),
-                         "detail": detail if self.discovery else "Discovery disabled for this server"}
+        engines = getattr(self.discoverer, "engines", {"discovery": self.discoverer})
+        for adapter in engines.values():
+            engine = getattr(adapter, "name", type(adapter).__name__)
+            version = getattr(adapter, "version", None)
+            detail = f"Subdomain discovery{(' · CLI contract ' + version) if version else ''}"
+            tools[engine] = {"available": self.discovery and bool(getattr(adapter, "executable", None)),
+                             "detail": detail if self.discovery else "Discovery disabled for this server"}
         if self.capture_enabled:
             executable = bool(getattr(self.capturer, "executable", None))
             browser = bool(getattr(self.capturer, "chrome_path", None))
@@ -354,7 +359,33 @@ class MonitorService:
             LOG.info("Run %s: DNS checks starting with %s for %d candidates; concurrency %d", run_id, backend, len(candidates), workers)
             report("dns", f"Checking {len(candidates):,} domains with {backend}; DNS concurrency {workers}.",
                    current=0, total=len(candidates), metrics={"resolved": 0, "negative": 0, "uncertain": 0})
-            observations = self.resolver.resolve(candidates)
+            overlapped_capture = None
+            if (self.capturer is not None and getattr(self.resolver, "supports_result_stream", False)
+                    and callable(getattr(self.capturer, "capture_stream", None))):
+                from .scan_pipeline import CaptureOverlap
+                pipeline = CaptureOverlap(self.resolver, self.capturer, candidates, workdir, signal, report)
+                try:
+                    report("pipeline", "Checking DNS; completed positive results feed HTTP checks and one browser process.",
+                           current=0, total=len(candidates))
+                    observations = self.resolver.resolve(candidates)
+                    self._check_shutdown()
+                    if set(observations) != set(candidates):
+                        raise RuntimeError("Resolver did not return an observation for every candidate; baseline unchanged.")
+                    try:
+                        overlapped_capture = pipeline.finish(observations)
+                    except Exception as exc:
+                        self._check_shutdown()
+                        LOG.exception("Could not finish overlapping capture for %s; retaining DNS observations", run_id)
+                        from .scan_pipeline import _failed_rows
+                        detail = f"Capture pipeline failed: {type(exc).__name__}: {exc}"
+                        overlapped_capture = ({domain: _failed_rows(domain, detail)
+                            for domain, item in observations.items() if item["status"] == "resolved"},
+                            {"status": "failed", "detail": detail, "overlapped_dns": True})
+                        report("pipeline", detail, level="error")
+                finally:
+                    pipeline.close()
+            else:
+                observations = self.resolver.resolve(candidates)
             self._check_shutdown()
             if set(observations) != set(candidates):
                 raise RuntimeError("Resolver did not return an observation for every candidate; baseline unchanged.")
@@ -383,10 +414,14 @@ class MonitorService:
             screenshots = None
             if self.capturer:
                 resolving = sorted(domain for domain, observation in observations.items() if observation["status"] == "resolved")
-                LOG.info("Run %s: website checks starting for %d resolving domains; screenshots only for responding HTTP/HTTPS endpoints", run_id, len(resolving))
-                report("websites", "Checking HTTP and HTTPS before browser capture.", current=0, total=len(resolving) * 2)
+                if overlapped_capture is None:
+                    LOG.info("Run %s: website checks starting for %d resolving domains; screenshots only for responding HTTP/HTTPS endpoints", run_id, len(resolving))
+                    report("websites", "Checking HTTP and HTTPS before browser capture.", current=0, total=len(resolving) * 2)
                 try:
-                    screenshots, source_status["screenshots"] = self.capturer.capture(resolving, workdir)
+                    if overlapped_capture is not None:
+                        screenshots, source_status["screenshots"] = overlapped_capture
+                    else:
+                        screenshots, source_status["screenshots"] = self.capturer.capture(resolving, workdir)
                 except Exception as exc:
                     self._check_shutdown()
                     LOG.exception("Screenshot stage failed for %s; retaining DNS observations", run_id)

@@ -288,7 +288,7 @@ class _StopSignal:
 
 
 class _OutputReader:
-    def __init__(self, path, stderr, candidates, nameservers, stop, check_cancel):
+    def __init__(self, path, stderr, candidates, nameservers, stop, check_cancel, result_callback=None):
         self.path, self.stderr, self.stop = path, stderr, stop
         self.check_cancel = check_cancel
         self.questions = {domain: [None, None, None] for domain in candidates}
@@ -297,6 +297,8 @@ class _OutputReader:
         self.counts = {"resolved": 0, "negative": 0, "uncertain": 0}
         self.fatal = None
         self.unsupported = False
+        self.result_callback = result_callback
+        self.emitted = set()
 
     def reject(self, reason):
         self.fatal = reason
@@ -372,6 +374,20 @@ class _OutputReader:
                         self.completed_domains += 1
                     if after is not None:
                         self.counts[after] += 1
+                    if after == "resolved" and domain not in self.emitted and callable(self.result_callback):
+                        self.emitted.add(domain)
+                        # Early positives are provisional: contradictory later
+                        # replies or a batch integrity failure can invalidate
+                        # them. The service reconciles against resolve()'s final
+                        # mapping before accepting any screenshot evidence.
+                        try:
+                            self.result_callback(domain, _observation(questions))
+                        except Exception:
+                            # Streaming is an optimization. The consumer also
+                            # receives every final positive after the DNS batch,
+                            # so failure here must not alter DNS evidence.
+                            LOG.exception("Early DNS result consumer failed; deferring remaining captures")
+                            self.result_callback = None
         except (OSError, ValueError) as exc:
             self.reject(f"MassDNS output could not be read: {type(exc).__name__}.")
 
@@ -387,6 +403,7 @@ class MassDnsResolver(DnsResolver):
 
     name = "MassDNS"
     version = "1.1.0+typowatch1"
+    supports_result_stream = True
 
     def __init__(self, nameservers=None, lifetime=4, workers=24, executable=None, *, resolve_count=3, timeout=3600):
         super().__init__(nameservers=nameservers, lifetime=lifetime, workers=workers)
@@ -451,7 +468,8 @@ class MassDnsResolver(DnsResolver):
             with _create(server_path) as target:
                 target.write(("\n".join(sorted(servers)) + "\n").encode("ascii"))
             local_stop = threading.Event()
-            reader = _OutputReader(output_path, stderr_path, domains, servers, local_stop, self._check_cancel)
+            reader = _OutputReader(output_path, stderr_path, domains, servers, local_stop, self._check_cancel,
+                                   getattr(self, "result_callback", None))
             last_report = time.monotonic()
 
             def tick():

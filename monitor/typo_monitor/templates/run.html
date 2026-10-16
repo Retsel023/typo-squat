@@ -19,6 +19,18 @@
         {% if state.get('engine') or state.get('version') %}<p class="source-detail"><strong>{{ state.get('engine') or source }}</strong>{% if state.get('version') %} · {{ state.version }}{% endif %}</p>{% endif %}
         {% if state.get('count') is not none %}<p>{{ state.count }} observations</p>{% endif %}
         {% if state.get('error') or state.get('detail') %}<p class="source-detail">{{ state.get('error') or state.get('detail') }}</p>{% endif %}
+        {% if state.get('engines') is mapping %}<details class="diagnostic"><summary>Discovery engines · {{ state.engines|length }}</summary>
+          {% for engine, engine_state in state.engines.items() %}<div class="source-card">
+            {% if engine_state is mapping %}{% set engine_status = engine_state.get('status', 'unknown') %}{% else %}{% set engine_status = engine_state %}{% endif %}
+            <div><strong>{{ engine_state.get('engine', engine) if engine_state is mapping else engine }}</strong><span class="badge {{ engine_status }}">{{ engine_status|replace('_', ' ')|capitalize }}</span></div>
+            {% if engine_state is mapping %}
+              {% if engine_state.get('version') %}<p class="source-detail">Version {{ engine_state.version }}</p>{% endif %}
+              {% if engine_state.get('cli_contract') %}<p class="source-detail">CLI contract {{ engine_state.cli_contract }}</p>{% endif %}
+              {% if engine_state.get('discovered') is not none %}<p>{{ engine_state.discovered }} in-scope names</p>{% endif %}
+              {% if engine_state.get('error') or engine_state.get('detail') %}<p class="source-detail">{{ engine_state.get('error') or engine_state.get('detail') }}</p>{% endif %}
+            {% endif %}
+          </div>{% endfor %}
+        </details>{% endif %}
       {% endif %}</article>
     {% else %}<p class="simple-empty">{% if run.status == 'running' %}Source results will appear when the scan finishes.{% elif run.status == 'cancelled' %}No source results were accepted before this scan was stopped.{% elif run.status == 'failed' %}No source results were accepted before this scan failed.{% else %}No source results were recorded for this scan.{% endif %}</p>{% endfor %}</div>
   </section>

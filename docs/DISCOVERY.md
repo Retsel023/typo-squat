@@ -1,26 +1,62 @@
 # Discovery and repeatable monitoring
 
-[OWASP Amass](https://owasp.org/projects/amass) is the default discovery engine
-for new scans. Subfinder remains available through explicit selection. There is
-no automatic fallback: if the selected executable is missing, fails or exceeds
-its time budget, source health records the gap while roots and saved inventory
-continue through the remaining scan stages.
+The default `combined` mode runs [OWASP Amass](https://owasp.org/projects/amass),
+[Subfinder](https://github.com/projectdiscovery/subfinder) and
+[Assetfinder](https://github.com/tomnomnom/assetfinder) concurrently. Each engine
+has its own output directory and deadline. Results are normalized, restricted
+to the project's roots, deduplicated, then combined with saved seeds. Generation
+receives that union once rather than running separately for every tool.
+
+Per-engine status stays visible even when another engine succeeds. A timeout,
+nonzero exit or unavailable executable does not discard other engines' valid
+results; complete valid lines from partial output are retained too. If every
+engine is unavailable or fails, the scan still checks roots and retained
+inventory. Selecting a single engine never silently substitutes another tool.
+Stop scan signals every running discovery process group and waits for cleanup.
 
 Global options go before the CLI command:
 
 ```sh
+python -m typo_monitor --discovery-engine combined --discovery-timeout 600 serve
 python -m typo_monitor --discovery-engine amass --amass-path /path/to/amass --discovery-timeout 600 serve
 python -m typo_monitor --amass-config /path/to/amass-v4-config.yaml serve
 python -m typo_monitor --discovery-engine subfinder --discovery-timeout 600 serve
+python -m typo_monitor --discovery-engine assetfinder --assetfinder-path /path/to/assetfinder serve
 python -m typo_monitor --no-discovery serve
 ```
 
 `--discovery-timeout` is the application's wall-clock budget **in seconds per
-root**, defaulting to 600. It is separate from upstream tools' timeout flags,
+tool, per root**, defaulting to 600. Engines run concurrently, but each engine
+processes its roots sequentially. Discovery waits for all selected engines to
+finish or hit their deadline before generating candidates. Running tools in
+parallel can improve coverage without adding all three runtimes together; it
+does not guarantee faster discovery than the slowest selected engine.
+The budget is separate from upstream tools' timeout flags,
 whose units and behavior differ. `--no-discovery` is an intentional skip that
 keeps known seeds. Both Compose profiles pass `TYPO_DISCOVERY_ENGINE` (default
-`amass`) and `TYPO_DISCOVERY_TIMEOUT` (default `600`) into the application. A
+`combined`) and `TYPO_DISCOVERY_TIMEOUT` (default `600`) into the application. A
 native runner accepts the same CLI options before its command.
+
+Binary overrides are `--amass-path`, `--subfinder-path` and `--assetfinder-path`.
+Combined mode enables Subfinder's `-all`; explicitly selecting Subfinder alone
+retains its normal provider selection. The
+[official Subfinder usage guide](https://docs.projectdiscovery.io/opensource/subfinder/usage)
+documents source selection and provider credentials. Enabling `-all` does not
+supply API keys or bypass provider limits.
+
+Assetfinder uses `--subs-only ROOT` and the image pins upstream's **v0.1.1
+prerelease** at
+[`4e95d8701aae8cff1c27af2626eb22ba110ad583`](https://github.com/tomnomnom/assetfinder/tree/4e95d8701aae8cff1c27af2626eb22ba110ad583).
+The adapter validates the hostname boundary itself; upstream's suffix check can
+also emit related names outside a root. Assetfinder has no version flag, so
+native paths use the v0.1.1 CLI contract without claiming runtime version verification.
+Its [upstream implementation](https://github.com/tomnomnom/assetfinder/blob/4e95d8701aae8cff1c27af2626eb22ba110ad583/main.go)
+suppresses individual provider errors. Successful process completion therefore
+does not prove every provider succeeded, and source health states that limit.
+Optional credentials are inherited through `FB_APP_ID` and `FB_APP_SECRET`,
+`VT_API_KEY`, and `SPYSE_API_TOKEN`; provider availability is not guaranteed.
+The monitor does not create or print these credentials. Docker users must pass
+needed environment variables explicitly; keep secret values outside the repository.
 
 The image pins [Amass **v4.2.0**](https://github.com/owasp-amass/amass/releases/tag/v4.2.0)
 in [`monitor/Dockerfile`](../monitor/Dockerfile). This is an intentional
@@ -65,20 +101,26 @@ supplied through a read-only mount if needed. Keep credential files outside
 the repository.
 
 Discovery depends on available data sources, credentials, external service
-health and the time budget. Neither engine guarantees exhaustive enumeration,
-and this repository has no measured comparison establishing more consistent
-coverage for your domains. Subfinder's
-[official usage guide](https://docs.projectdiscovery.io/opensource/subfinder/usage)
-describes additional source selection and provider configuration; selecting
-Subfinder here does not automatically enable all providers or supply credentials.
+health and the time budget. The tools overlap and can report different names;
+their union can add coverage, but none guarantees exhaustive enumeration.
+This repository has no measured comparison establishing more consistent
+coverage for your domains. Credentials are not bundled and upstream provider
+availability can change.
+
+Combined runs retain their files under `data/runs/RUN_UUID/discovery/ENGINE/`.
+`discovery.json` in the run folder records the roots, per-engine status and a
+hostname-to-engine provenance map. A hostname reported by three tools is one
+seed with three source entries, not three generation jobs. Successful output
+from an engine that later times out keeps that engine's partial status.
 
 Each Amass root attempt preserves `amass-N.txt`, `amass-N.stdout.log`,
 `amass-N.stderr.log`, `amass-N.engine.log` and its `amass-db-N/` working data under
-`data/runs/RUN_UUID/`, together with source health. `amass-version.log` records
-the CLI compatibility check. Explicit Subfinder runs
-retain `subfinder-N.txt` and `subfinder-N.stderr.log`. Old runs remain historical
-Subfinder runs with their original artifacts; an upgrade does not relabel them
-as Amass or invent missing discovery results.
+its engine folder, together with source health. `amass-version.log` records
+the CLI compatibility check. Subfinder retains `subfinder-N.txt` and
+`subfinder-N.stderr.log`; Assetfinder retains `assetfinder-N.txt` and
+`assetfinder-N.stderr.log`. Single-engine runs put their files directly in
+`data/runs/RUN_UUID/`. Old runs retain their original engine metadata and
+artifacts; upgrades do not relabel history or invent missing discovery results.
 
 For this project the durable comparison rule is independent of the enumerator:
 union discoveries with saved seeds, generate permutations only for seeds without
@@ -94,6 +136,16 @@ errors and credential availability, and keep the DNS resolver view consistent.
 Changing discovery engine does not replace an existing DNS baseline or reset
 the generation cache: newly discovered seeds can add candidates, while saved
 names remain monitored.
+
+Discovery still finishes before candidate generation. Later stages can overlap:
+MassDNS emits a provisional positive domain only after its A, AAAA and CNAME
+questions have all completed and the result is validated. Bounded HTTP/HTTPS
+checks then feed responsive URLs to a single Gowitness process through standard
+input while DNS continues. A full queue defers a name until the final pass rather
+than blocking DNS or dropping it. Only final resolving DNS results can have
+captures accepted, and accepted inventory still publishes once at run completion.
+Cancellation never publishes unfinished work. The dnspython backend retains the
+DNS-first path.
 
 
 ## Incremental permutation generation

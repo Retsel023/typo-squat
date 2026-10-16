@@ -6,6 +6,7 @@ if (runProgress) {
   const stageLabels = {
     queued: "Waiting to start", discovery: "Finding subdomains",
     generation: "Generating typo candidates", dns: "Checking DNS",
+    pipeline: "Checking DNS and capturing websites",
     parking: "Checking parking signals", websites: "Checking website responses",
     screenshots: "Capturing websites", comparison: "Comparing images",
     publishing: "Saving results", completed: "Completed",

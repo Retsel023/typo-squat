@@ -20,12 +20,14 @@ def parser():
     p = argparse.ArgumentParser(description="Persistent typo-domain monitoring")
     p.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent.parent / "data")
     p.add_argument("--no-discovery", action="store_true", help="Explicitly skip subdomain discovery, retaining known seeds")
-    p.add_argument("--discovery-engine", choices=["amass", "subfinder"],
-                   default=os.environ.get("TYPO_DISCOVERY_ENGINE", "amass"),
-                   help="Subdomain discovery engine (TYPO_DISCOVERY_ENGINE, otherwise amass); no automatic fallback")
+    p.add_argument("--discovery-engine", choices=["combined", "amass", "subfinder", "assetfinder"],
+                   default=os.environ.get("TYPO_DISCOVERY_ENGINE", "combined"),
+                   help="Discovery selection (TYPO_DISCOVERY_ENGINE, otherwise combined); combined runs three tools concurrently")
     p.add_argument("--discovery-timeout", type=float, default=os.environ.get("TYPO_DISCOVERY_TIMEOUT", "600"),
-                   help="Per-root discovery wall-clock limit in seconds (TYPO_DISCOVERY_TIMEOUT, otherwise 600)")
+                   help="Per-tool, per-root discovery wall-clock limit in seconds (TYPO_DISCOVERY_TIMEOUT, otherwise 600)")
     p.add_argument("--amass-path", help="Path to Amass 4.2.0")
+    p.add_argument("--subfinder-path", help="Path to Subfinder")
+    p.add_argument("--assetfinder-path", help="Path to Assetfinder (v0.1.1 CLI contract)")
     p.add_argument("--amass-config", type=Path, default=os.environ.get("TYPO_AMASS_CONFIG") or None,
                    help="Optional provider-only Amass 4.2 YAML configuration (TYPO_AMASS_CONFIG)")
     p.add_argument("--resolver", action="append", help="Recursive DNS server IP; repeat for multiple servers")
@@ -45,7 +47,8 @@ def parser():
     p.add_argument("--capture-workers", type=int, default=4, help="Concurrent browser captures")
     p.add_argument("--web-timeout", type=float, default=3,
                    help="HTTP/HTTPS response check timeout before browser captures, in seconds")
-    p.add_argument("--capture-timeout", type=float, default=900, help="Total capture stage deadline in seconds")
+    p.add_argument("--capture-timeout", type=float, default=900,
+                   help="Capture drain deadline after streamed input closes; whole invocation deadline in DNS-first mode, seconds")
     p.add_argument("--capture-driver", choices=["gorod", "chromedp"], default="gorod")
     commands = p.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve", help="Run production WSGI server and background scan worker")
@@ -100,17 +103,29 @@ def main(argv=None):
             print(f"{report['summary']['selected_pairs']} eligible pairs; this batch has {report['batch']['pairs']} pairs and {report['batch']['inline_image_bytes']} inline image bytes. External requests: 0.")
             return 0
         from .adapters import DnsResolver, Subfinder
+        from .assetfinder import Assetfinder
         from .discovery import Amass
+        from .discovery_ensemble import CombinedDiscovery
         from .massdns import MassDnsResolver
         from .screenshots import GowitnessCapture
         capturer = None if args.no_screenshots else GowitnessCapture(
             executable=args.gowitness_path, chrome_path=args.chrome_path,
             timeout=args.capture_timeout, threads=args.capture_workers, driver=args.capture_driver,
             probe_timeout=args.web_timeout)
-        if args.discovery_engine not in {"amass", "subfinder"}:
-            raise ValueError("TYPO_DISCOVERY_ENGINE must be amass or subfinder.")
-        discoverer = (Amass(args.amass_path, timeout=args.discovery_timeout, config=args.amass_config)
-                      if args.discovery_engine == "amass" else Subfinder(timeout=args.discovery_timeout))
+        if args.discovery_engine not in {"combined", "amass", "subfinder", "assetfinder"}:
+            raise ValueError("TYPO_DISCOVERY_ENGINE must be combined, amass, subfinder or assetfinder.")
+        if args.discovery_engine == "combined":
+            discoverer = CombinedDiscovery({
+                "amass": Amass(args.amass_path, timeout=args.discovery_timeout, config=args.amass_config),
+                "subfinder": Subfinder(args.subfinder_path, timeout=args.discovery_timeout, all_sources=True),
+                "assetfinder": Assetfinder(args.assetfinder_path, timeout=args.discovery_timeout),
+            })
+        elif args.discovery_engine == "amass":
+            discoverer = Amass(args.amass_path, timeout=args.discovery_timeout, config=args.amass_config)
+        elif args.discovery_engine == "subfinder":
+            discoverer = Subfinder(args.subfinder_path, timeout=args.discovery_timeout)
+        else:
+            discoverer = Assetfinder(args.assetfinder_path, timeout=args.discovery_timeout)
         if args.dns_backend not in {"massdns", "dnspython"}:
             raise ValueError("TYPO_DNS_BACKEND must be massdns or dnspython.")
         resolver = (MassDnsResolver(args.resolver, args.dns_timeout, args.workers,

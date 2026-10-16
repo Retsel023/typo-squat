@@ -5,8 +5,8 @@ services:
     environment:
       TYPO_DNS_WORKERS: "${TYPO_DNS_WORKERS:-24}"
       TYPO_DNS_BACKEND: "${TYPO_DNS_BACKEND:-massdns}"
-      # Explicit engine selection; a failed/missing tool does not trigger fallback.
-      TYPO_DISCOVERY_ENGINE: "${TYPO_DISCOVERY_ENGINE:-amass}"
+      # Combined launches three independent sources; failures remain visible.
+      TYPO_DISCOVERY_ENGINE: "${TYPO_DISCOVERY_ENGINE:-combined}"
       TYPO_DISCOVERY_TIMEOUT: "${TYPO_DISCOVERY_TIMEOUT:-600}"
       TYPO_AMASS_CONFIG: "${TYPO_AMASS_CONFIG:-}"
     init: true

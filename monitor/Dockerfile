@@ -7,6 +7,11 @@ ENV GOTOOLCHAIN=local
 RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath \
     github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION}
 
+# v0.1.1 is upstream's prerelease CLI; pin its source revision explicitly.
+ARG ASSETFINDER_REVISION=4e95d8701aae8cff1c27af2626eb22ba110ad583
+RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath \
+    github.com/tomnomnom/assetfinder@${ASSETFINDER_REVISION}
+
 # Pin the self-contained v4 CLI. Amass v5 uses a separate HTTP engine and a
 # different export contract; it must not be substituted without lifecycle work.
 ARG AMASS_REVISION=5f1f7176bae60975c1e5be64273cb201f1bb37c3
@@ -55,6 +60,7 @@ RUN pip install --no-cache-dir -r requirements.lock \
     && chown app:app /data
 
 COPY --from=tools /out/subfinder /usr/local/bin/subfinder
+COPY --from=tools /out/assetfinder /usr/local/bin/assetfinder
 COPY --from=tools /out/amass /usr/local/bin/amass
 COPY --from=tools /out/massdns /usr/local/bin/massdns
 COPY --from=tools /out/gowitness /usr/local/bin/gowitness

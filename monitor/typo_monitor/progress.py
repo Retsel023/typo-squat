@@ -29,9 +29,14 @@ MAX_SOURCE_BYTES = 12 * 1024
 MAX_OUTPUT_SOURCES = 8
 TERMINAL_STAGES = frozenset({"completed", "partial", "cancelled", "failed"})
 _TOOL_NAME = re.compile(
-    r"(?:generator\.log|gowitness\.log|subfinder-\d+\.(?:stderr\.log|txt)"
+    r"(?:generator\.log|gowitness\.log|(?:subfinder|assetfinder)-\d+\.(?:stderr\.log|txt)"
     r"|amass-version\.log|amass-\d+\.(?:stdout\.log|stderr\.log|engine\.log|txt)"
     r"|massdns\.(?:stderr\.log|jsonl)|massdns-(?:a|aaaa|cname)\.(?:stderr\.log|jsonl))\Z")
+_DISCOVERY_TOOL_NAMES = {
+    "amass": re.compile(r"(?:amass-version\.log|amass-\d+\.(?:stdout\.log|stderr\.log|engine\.log|txt))\Z"),
+    "subfinder": re.compile(r"subfinder-\d+\.(?:stderr\.log|txt)\Z"),
+    "assetfinder": re.compile(r"assetfinder-\d+\.(?:stderr\.log|txt)\Z"),
+}
 _ANSI = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _REGISTRY_LOCK = threading.Lock()
@@ -271,6 +276,17 @@ def read_tool_output(data_dir, run_id):
             candidates.extend((path.name, path) for path in workdir.iterdir() if _TOOL_NAME.fullmatch(path.name))
         except OSError:
             pass
+        # Ensemble adapters have fixed, isolated output folders. Enumerate only
+        # these three directories and their explicit tool names; never recurse
+        # into Amass state/configuration or follow directory symlinks.
+        for engine, names in _DISCOVERY_TOOL_NAMES.items():
+            try:
+                directory = _safe_path(workdir / "discovery" / engine, directory=True)
+                if directory.exists():
+                    candidates.extend((f"discovery/{engine}/{path.name}", path)
+                                      for path in directory.iterdir() if names.fullmatch(path.name))
+            except (OSError, ValueError):
+                continue
     sources = []
     for name, path in candidates:
         try:

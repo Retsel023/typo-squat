@@ -2,7 +2,8 @@
 
 This folder runs the current application without n8n or local AI. Docker builds
 from the shared [`monitor/Dockerfile`](../monitor/Dockerfile), including Python,
-Amass **4.2.0**, MassDNS **1.1.0**, Subfinder, Gowitness **3.2.2**, Chromium and the locked Python
+Amass **4.2.0**, MassDNS **1.1.0**, Subfinder, Assetfinder's pinned **v0.1.1**
+prerelease CLI, Gowitness **3.2.2**, Chromium and the locked Python
 dependencies. You need Docker Engine and the Compose plugin on the host; you do
 not need to install Python, Go, Chromium or scanning tools there. Keep this folder beside `monitor/`
 in the repository: it deliberately shares that source instead of copying it.
@@ -87,12 +88,17 @@ absent. All inventory names are queried again on every run; generation caching
 never substitutes for fresh DNS. The Python option uses the same saved setting
 as its domain-worker count. See [DNS backend details](../docs/DNS.md).
 
-Amass **4.2.0** is the default discovery engine. This compatibility pin uses a
-self-contained enumeration command; Amass v5's separate engine lifecycle needs
-a different integration. To explicitly select Subfinder, start
-with `TYPO_DISCOVERY_ENGINE=subfinder`; there is no automatic fallback between
-engines. `TYPO_DISCOVERY_TIMEOUT` sets the per-root limit in seconds (default
-600). For example:
+Discovery defaults to `TYPO_DISCOVERY_ENGINE=combined`: Amass **4.2.0**,
+Subfinder with `-all`, and Assetfinder run concurrently. Their normalized,
+in-scope names are deduplicated before generation, with per-tool health and
+hostname provenance retained in `discovery.json`. Partial results remain usable
+when another tool fails or times out. Assetfinder does not expose individual
+upstream provider failures, so its process success is not a provider health check.
+Amass's compatibility pin uses a self-contained enumeration command; v5's
+separate engine lifecycle needs a different integration. Select `amass`,
+`subfinder` or `assetfinder` to run just one tool; single-engine selections never
+silently switch to another engine. `TYPO_DISCOVERY_TIMEOUT` sets each tool's
+per-root limit in seconds (default 600). For example:
 
 ```sh
 TYPO_DISCOVERY_ENGINE=subfinder TYPO_DISCOVERY_TIMEOUT=600 TYPO_STANDALONE_PORT=5057 docker compose up --build -d
@@ -112,6 +118,16 @@ A timeout remains uncertain. All endpoints are checked again on later scans.
 DNS-only domains stay visible, with compact protocol status instead of empty
 screenshot panels. A previous successful image is labelled as an older capture.
 Detailed checks are retained in `/data/runs/RUN_UUID/preflight.json`.
+
+MassDNS can feed this work before its bulk DNS job finishes. A domain is offered
+only after its A, AAAA and CNAME questions are complete and the positive result
+is validated. Bounded HTTP/HTTPS checks pass responsive URLs to one Gowitness
+process through standard input. A full handoff queue defers names until the
+final DNS pass, so slow browsers do not block DNS or lose names. Final captures
+must belong to domains that resolve in the completed DNS results; accepted
+findings still publish together at the end. Stop scan discards unfinished work.
+The dnspython alternative remains DNS-first. Live pipeline progress displays
+separate DNS, web-check and capture counts.
 
 ## Follow an actual scan
 
@@ -144,11 +160,14 @@ capture has started, inspect its log without installing host tools:
 docker compose exec monitor tail -n 50 /data/runs/RUN_UUID/gowitness.log
 ```
 
-Generation attempts also retain `generator.log`; Amass retains per-root
+Generation attempts also retain `generator.log`. Combined discovery places
+each tool's files under `discovery/amass/`, `discovery/subfinder/` or
+`discovery/assetfinder/` within the run folder. Amass retains per-root
 `amass-N.txt` typed asset/relationship output, `amass-N.stdout.log`,
 `amass-N.stderr.log`, `amass-N.engine.log` and `amass-db-N/` working data. Those
 discovery relationships are not current DNS evidence; DNS is checked afresh.
-Explicit Subfinder runs retain their own output and stderr. A reused generation
+Subfinder and Assetfinder retain their own output and stderr. Single-engine
+runs keep their files directly in the run folder. A reused generation
 cache does not launch AIL or create a new AIL log. For native runs, the same
 application stage messages appear in the terminal and tool logs live under
 `standalone/data/runs/RUN_UUID/`.
@@ -236,10 +255,11 @@ automation API even if a token exists in your shell. `setup` creates a local
 virtual environment and installs the locked Python dependencies. It does not
 install system packages or scanner binaries. For real native screenshots,
 install Gowitness **3.2.2** and Chrome/Chromium. Install MassDNS **1.1.0**
-for bulk lookups, or choose `--dns-backend dnspython`. Install Amass **4.2.0**
-for default discovery, or explicitly choose Subfinder with
-`--discovery-engine subfinder`. `--amass-path` supplies a native Amass binary
-path, `--amass-config` supplies optional provider-only v4 YAML configuration, and
+for bulk lookups, or choose `--dns-backend dnspython`. Default combined discovery
+needs Amass **4.2.0**, Subfinder and Assetfinder; each can instead be selected
+alone with `--discovery-engine amass`, `subfinder` or `assetfinder`.
+`--amass-path`, `--subfinder-path` and `--assetfinder-path` supply native binary
+paths, `--amass-config` supplies optional provider-only v4 YAML configuration, and
 `--discovery-timeout` changes the per-root seconds limit. Unsupported Amass
 versions are rejected visibly. The
 [application guide](../monitor/README.md) documents these tools.
@@ -262,5 +282,5 @@ python3 standalone/run.py --gowitness-path /path/to/gowitness --chrome-path /pat
 ```
 
 The Docker configuration reuses the maintained image definition. The current
-Amass/MassDNS changes have not been built or run here; build the updated image and check
+discovery and streaming changes have not been built or run here; build the updated image and check
 `doctor` before relying on its discovery results.

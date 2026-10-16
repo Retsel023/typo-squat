@@ -99,6 +99,69 @@ def _image_path(workdir, filename):
     return resolved.relative_to(workdir).as_posix()
 
 
+def _validate_metadata(metadata, workdir, requested, check_shutdown):
+    """Select only requested, unique results with safe verified image artifacts."""
+    malformed, foreign, duplicates = 0, 0, set()
+    records = {}
+    if metadata.exists():
+        if metadata.is_symlink() or not metadata.resolve().is_relative_to(workdir):
+            raise ValueError("Gowitness metadata is not a safe local file.")
+        with metadata.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                check_shutdown()
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    malformed += 1
+                    continue
+                if not isinstance(record, dict) or not isinstance(record.get("url"), str):
+                    malformed += 1
+                    continue
+                url = record["url"]
+                if url not in requested:
+                    foreign += 1
+                    continue
+                if url in records:
+                    duplicates.add(url)
+                records[url] = record
+    artifact_urls = {}
+    for url, record in records.items():
+        filename = record.get("file_name")
+        if isinstance(filename, str) and filename:
+            artifact_urls.setdefault(filename, set()).add(url)
+    for url, record in records.items():
+        row = requested[url]
+        if url in duplicates:
+            row["error"] = "Duplicate JSONL results for this requested URL; no artifact selected."
+            continue
+        filename = record.get("file_name")
+        if isinstance(filename, str) and len(artifact_urls.get(filename, ())) > 1:
+            row["error"] = "Multiple requested URLs share one screenshot artifact; no artifact selected."
+            continue
+        row["title"] = record.get("title") if isinstance(record.get("title"), str) else None
+        code = record.get("response_code")
+        row["http_status"] = code if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599 else None
+        try:
+            timestamp = datetime.fromisoformat(str(record.get("probed_at", "")).replace("Z", "+00:00"))
+            if timestamp.utcoffset() is not None:
+                row["captured_at"] = timestamp.astimezone(timezone.utc).isoformat()
+        except ValueError:
+            pass
+        if record.get("failed") is not False or record.get("is_pdf") is not False:
+            row["error"] = str(record.get("failed_reason") or "Gowitness marked the capture failed or returned unsupported screenshot metadata.")
+            continue
+        if row["http_status"] is None:
+            row["error"] = "Gowitness metadata has no valid HTTP response code."
+            continue
+        try:
+            relative_path = _image_path(workdir, record.get("file_name"))
+        except (OSError, ValueError) as error:
+            row["error"] = f"Screenshot artifact rejected: {error}"
+            continue
+        row.update(status="captured", relative_path=relative_path, error=None)
+    return malformed, foreign, duplicates
+
+
 class _JsonlProgress:
     """Read bounded, complete records for telemetry; final validation stays separate."""
 
@@ -332,64 +395,7 @@ class GowitnessCapture:
             self._check_shutdown()
             if monitor is not None:
                 monitor.poll()
-            malformed, foreign, duplicates = 0, 0, set()
-            records = {}
-            if metadata.exists():
-                if metadata.is_symlink() or not metadata.resolve().is_relative_to(workdir):
-                    raise ValueError("Gowitness metadata is not a safe local file.")
-                with metadata.open(encoding="utf-8", errors="replace") as stream:
-                    for line in stream:
-                        self._check_shutdown()
-                        try:
-                            record = json.loads(line)
-                        except (ValueError, TypeError):
-                            malformed += 1
-                            continue
-                        if not isinstance(record, dict) or not isinstance(record.get("url"), str):
-                            malformed += 1
-                            continue
-                        url = record["url"]
-                        if url not in requested:
-                            foreign += 1
-                            continue
-                        if url in records:
-                            duplicates.add(url)
-                        records[url] = record
-            artifact_urls = {}
-            for url, record in records.items():
-                filename = record.get("file_name")
-                if isinstance(filename, str) and filename:
-                    artifact_urls.setdefault(filename, set()).add(url)
-            for url, record in records.items():
-                row = requested[url]
-                if url in duplicates:
-                    row["error"] = "Duplicate JSONL results for this requested URL; no artifact selected."
-                    continue
-                filename = record.get("file_name")
-                if isinstance(filename, str) and len(artifact_urls.get(filename, ())) > 1:
-                    row["error"] = "Multiple requested URLs share one screenshot artifact; no artifact selected."
-                    continue
-                row["title"] = record.get("title") if isinstance(record.get("title"), str) else None
-                code = record.get("response_code")
-                row["http_status"] = code if isinstance(code, int) and not isinstance(code, bool) and 100 <= code <= 599 else None
-                try:
-                    timestamp = datetime.fromisoformat(str(record.get("probed_at", "")).replace("Z", "+00:00"))
-                    if timestamp.utcoffset() is not None:
-                        row["captured_at"] = timestamp.astimezone(timezone.utc).isoformat()
-                except ValueError:
-                    pass
-                if record.get("failed") is not False or record.get("is_pdf") is not False:
-                    row["error"] = str(record.get("failed_reason") or "Gowitness marked the capture failed or returned unsupported screenshot metadata.")
-                    continue
-                if row["http_status"] is None:
-                    row["error"] = "Gowitness metadata has no valid HTTP response code."
-                    continue
-                try:
-                    relative_path = _image_path(workdir, record.get("file_name"))
-                except (OSError, ValueError) as error:
-                    row["error"] = f"Screenshot artifact rejected: {error}"
-                    continue
-                row.update(status="captured", relative_path=relative_path, error=None)
+            malformed, foreign, duplicates = _validate_metadata(metadata, workdir, requested, self._check_shutdown)
             detail = f"Captured {sum(row['status'] == 'captured' for row in requested.values())} of {len(requested)} HTTP-responsive endpoints; other attempts were skipped by preflight."
             if issue:
                 detail += " " + issue
@@ -409,3 +415,11 @@ class GowitnessCapture:
             stage = self._stage(results, detail, failed=True, version=detected_version)
             _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
             return results, stage
+
+    def capture_stream(self, domains_iterator, workdir):
+        """Capture qualified endpoints while a producer supplies resolving domains.
+
+        Results remain provisional until the service reconciles final DNS facts.
+        """
+        from .capture_pipeline import capture_stream
+        return capture_stream(self, domains_iterator, workdir)

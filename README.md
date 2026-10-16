@@ -1,14 +1,17 @@
 # Typo Watch
 
-Linux/server monitoring for typo domains, using Amass discovery, cached AIL
-permutations and MassDNS bulk lookups by default. Subfinder discovery and
-dnspython lookups are explicit alternatives. The current application lives in
+Linux/server monitoring for typo domains, using Amass, Subfinder and Assetfinder
+concurrently, cached AIL permutations and MassDNS bulk lookups by default.
+Each discovery tool can also run alone; dnspython is an explicit DNS alternative.
+The current application lives in
 [monitor](monitor/README.md).
 
 V3 now stores observations and an accumulating candidate inventory in SQLite.
 Discovery misses do not remove candidates, DNS failures remain uncertain, and
 changes compare normalized DNS record sets instead of spreadsheet positions.
-The selected discovery engine never falls back automatically to another tool.
+Discovery results are normalized, scoped and combined once, with per-tool source
+health and hostname provenance. A tool failure leaves the other results usable;
+selecting a single tool never silently substitutes another one.
 Every saved candidate still receives fresh DNS checks on each scan. See
 [discovery settings](docs/DISCOVERY.md) for selection and time limits.
 
@@ -35,7 +38,10 @@ does not execute them.
 
 Gowitness captures both HTTP and HTTPS and preserves dated image history. Local
 pixel comparison tracks changes and collapses identical protocol images in the
-gallery. The [n8n Cloud workflow](workflows/n8n-visual-review.json) can orchestrate
+gallery. During MassDNS, complete positive DNS results can enter bounded web
+checks and feed responsive URLs to Gowitness before the bulk DNS job finishes.
+Accepted findings still publish together when the run completes.
+The [n8n Cloud workflow](workflows/n8n-visual-review.json) can orchestrate
 the server over HTTPS and send a small selected batch to n8n's OpenAI image node.
 AI starts disabled; local image comparison works without it.
 Embedded XLSX reporting remains in the historical scripts.

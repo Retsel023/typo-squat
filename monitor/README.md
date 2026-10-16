@@ -4,8 +4,9 @@ Linux server monitoring with Docker as an isolated test/deployment environment.
 Python owns orchestration, persistent state, DNS result validation and the web interface.
 MassDNS performs bulk A, AAAA and CNAME lookups by default; dnspython is an
 explicit alternative.
-AIL supplies its `runAll` permutation algorithms. Amass is the default discovery
-engine; Subfinder is an explicit alternative. Discovery can also be disabled.
+AIL supplies its `runAll` permutation algorithms. Discovery defaults to Amass,
+Subfinder and Assetfinder running concurrently, followed by one normalized,
+deduplicated union. Each engine can also be selected alone, or discovery disabled.
 
 For a separate local profile and a preview of optional AI handoff volume, use
 [`standalone/`](../standalone/README.md). It needs neither n8n nor an AI model.
@@ -26,8 +27,9 @@ immediately and its adapters stop as they reach cancellation checks. The last
 accepted inventory, DNS baseline, generation cache and screenshots remain intact;
 unfinished work from the stopped run is not published.
 
-The image uses slim Python, Amass **4.2.0**, MassDNS **1.1.0**, versioned Subfinder and Gowitness
-binaries, Chromium, locked Python dependencies, and an unprivileged user. It
+The image uses slim Python, Amass **4.2.0**, MassDNS **1.1.0**, Subfinder,
+Assetfinder's pinned **v0.1.1** prerelease CLI, Gowitness, Chromium, locked Python
+dependencies, and an unprivileged user. It
 does not run Kali upgrades, the old installers, cron, or shell command queues.
 SQLite and per-run artifacts live in the `monitor-data` named volume at `/data`.
 The application filesystem is read
@@ -58,6 +60,11 @@ output. It polls every four seconds, including while the output is open, and
 preserves your reading position. Counts describe the current stage rather than
 an estimated completion time or overall percentage.
 
+MassDNS scans use an overlapping DNS/web/capture pipeline. Its live progress
+shows separate counts for those stages rather than changing the displayed
+stage each time a worker reports. The dnspython alternative still completes DNS
+before starting website checks.
+
 Tool output is displayed as escaped plain text with terminal controls removed.
 The page reads only explicit tool log/output names, up to eight recent sources,
 12 KiB per source and 64 KiB in total. Tool buffering can delay new lines; Python
@@ -77,9 +84,13 @@ starts:
 docker compose exec monitor tail -n 50 /data/runs/RUN_UUID/gowitness.log
 ```
 
-Amass attempts retain `amass-N.txt` (typed asset/relationship output), separate
-stdout/stderr and engine logs, and `amass-db-N/` working data per root. These raw
-discovery records do not replace the DNS verification performed by each scan.
+Combined discovery stores each engine's output under
+`/data/runs/RUN_UUID/discovery/ENGINE/`, plus `discovery.json` with per-engine
+health and the engines that reported each hostname. Amass attempts retain
+`amass-N.txt` (typed asset/relationship output), separate stdout/stderr and
+engine logs, and `amass-db-N/` working data per root. Subfinder and Assetfinder
+retain `ENGINE-N.txt` and `ENGINE-N.stderr.log`. Single-engine runs keep their
+files directly in the run folder. These discovery records do not replace fresh DNS.
 
 After updating application source, use `docker compose up --build -d` to rebuild
 and recreate the image while retaining its named volume. Let an active scan
@@ -98,12 +109,17 @@ python3 -m venv .venv
 .venv/bin/python -m typo_monitor serve
 ```
 
-Python setup needs no root access. Install Amass **4.2.0** separately on `PATH`,
-or select it with `--amass-path /path/to/amass`. To use
-Subfinder instead, install it and select `--discovery-engine subfinder`.
-The application does not automatically switch engines if the selected tool is
-missing, fails or times out: the run reports a discovery gap and still checks
-roots and retained inventory. `--no-discovery` explicitly disables this stage.
+Python setup needs no root access. Default combined discovery needs Amass
+**4.2.0**, Subfinder and Assetfinder separately on `PATH`; explicit binary paths
+are accepted through `--amass-path`, `--subfinder-path` and `--assetfinder-path`.
+Combined mode runs the three engines concurrently, enables Subfinder's `-all`
+providers, and retains usable results when another tool fails. A missing or
+failed engine is visible in source health. Provider credentials are optional
+and not bundled; Assetfinder suppresses individual upstream provider errors, so
+a successful process does not establish that every provider worked.
+Select `--discovery-engine amass`, `subfinder` or `assetfinder` to run just that
+tool; a single-engine selection never silently switches tools.
+`--no-discovery` explicitly disables discovery while retaining known inventory.
 Amass v5 uses a separate engine lifecycle and is not supported by this adapter;
 an incompatible executable produces a visible version diagnostic. Supply an
 optional provider-only v4 YAML config with `--amass-config PATH` or
@@ -120,8 +136,10 @@ python -m typo_monitor --gowitness-path /path/to/gowitness --chrome-path /path/t
 
 Captures are enabled by default. `--no-screenshots` explicitly skips them while
 DNS monitoring continues. `--capture-workers` defaults to 4, `--capture-timeout`
-to 900 seconds per batch, and `--capture-driver` to `gorod`; `chromedp` is also
+to a 900-second drain deadline after the streaming URL input closes (or the
+whole capture invocation for the DNS-first path), and `--capture-driver` to `gorod`; `chromedp` is also
 available. Missing binaries and individual HTTP/HTTPS failures are displayed.
+Streaming browser captures also have an independent 60-second per-page timeout.
 The Docker image already includes the required capture tools.
 
 Before Gowitness, lightweight HTTP and HTTPS checks test each resolving domain
@@ -132,6 +150,17 @@ the run's DNS concurrency setting, independently of the 4 browser workers. Resul
 saved in `preflight.json` and refreshed on every run. Domains without a responding
 website remain in DNS inventory, with compact status rows instead of empty
 screenshot frames. An older saved screenshot is explicitly labelled as previous.
+
+With MassDNS, a domain enters this pipeline only after all its A, AAAA and
+CNAME questions have completed and its positive result is validated. A bounded
+queue offers names to concurrent HTTP/HTTPS checks while MassDNS keeps running;
+if the queue fills, those names wait for the final DNS pass rather than blocking
+DNS or being lost. Responsive URLs feed one Gowitness process through standard
+input, so a complete URL list is not required before the browser starts.
+Each protocol is checked independently. Final capture acceptance is restricted
+to domains that resolve in the final DNS results. The application still commits
+inventory and screenshots together at the end; stopped or failed work is not
+published. The dnspython alternative retains the DNS-first path.
 
 The Python orchestration avoids Bash, cron and external `flock` binaries.
 Native Windows compatibility has not been tested; Linux is the target.
@@ -221,9 +250,11 @@ The server default can be set with `--workers 20` before the CLI command, or
 `TYPO_DNS_WORKERS=20`. Both Compose profiles pass that environment variable into
 the container. A saved project setting takes precedence over the server default.
 
-Discovery uses `--discovery-engine amass` by default. Set that option to
-`subfinder` to opt in to the other adapter. `--discovery-timeout` is a per-root
-limit in seconds, defaulting to 600. The corresponding environment variables
+Discovery uses `--discovery-engine combined` by default. Set that option to
+`amass`, `subfinder` or `assetfinder` for a single adapter. The combined tools
+have independent per-root deadlines; one slow or failed tool cannot discard
+another's valid names. `--discovery-timeout` is a per-tool, per-root limit in
+seconds, defaulting to 600. The corresponding environment variables
 are `TYPO_DISCOVERY_ENGINE` and `TYPO_DISCOVERY_TIMEOUT`; both Compose profiles
 pass them into the container. Historical runs keep the engine recorded when
 they ran. Changing discovery engine does not discard saved seeds/candidates or
@@ -244,7 +275,7 @@ Other global options: `--workers` (default concurrency 24), `--dns-timeout`
 3600 seconds for the entire bulk job), and `--max-candidates` (250,000).
 Exceeding the candidate limit fails a run rather than truncating coverage.
 AIL generation has a 15-minute timeout; each root's discovery call defaults
-to a 10-minute timeout. The current Amass/MassDNS changes have not been built
+to a 10-minute timeout. The current discovery/streaming changes have not been built
 or tested here.
 
 
