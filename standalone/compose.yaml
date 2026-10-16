@@ -1,0 +1,37 @@
+# Run from this folder: docker compose up --build -d
+# The shared Dockerfile includes Subfinder, Gowitness, Chromium and Python.
+services:
+  monitor:
+    build:
+      context: ../monitor
+      dockerfile: Dockerfile
+    image: typo-monitor:standalone
+    entrypoint:
+      - python
+      - -m
+      - typo_monitor
+      - --data-dir
+      - /data
+      - --chrome-path
+      - /usr/bin/chromium
+    command: ["serve", "--host", "0.0.0.0", "--port", "5000"]
+    environment:
+      TYPO_MONITOR_API_TOKEN: ""
+    init: true
+    shm_size: 256mb
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${TYPO_STANDALONE_PORT:-5055}:5000"
+    volumes:
+      - standalone-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
+volumes:
+  standalone-data:
