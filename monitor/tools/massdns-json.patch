@@ -1,7 +1,7 @@
 diff --git a/src/main.c b/src/main.c
 --- a/src/main.c
 +++ b/src/main.c
-@@ -73,6 +73,7 @@
+@@ -76,6 +76,7 @@
                      "      --socket-count     Socket count per process. (Default: 1)\n"
                      "  -t  --type             Record type to be resolved. (Default: A)\n"
                      "      --verify-ip        Verify IP addresses of incoming replies.\n"
@@ -9,13 +9,17 @@ diff --git a/src/main.c b/src/main.c
                      "  -w  --outfile          Write to the specified output file instead of standard output.\n"
                      "\n"
                      "Output flags:\n"
-@@ -1483,4 +1484,4 @@
+@@ -1588,7 +1589,7 @@
+                     dns_print_packet(context.outfile, &packet, offset, len, next);
+                     break;
+ 
 -                case OUTPUT_NDJSON:
 +                case OUTPUT_NDJSON: {
                      if (context.format.only_with_answers_or_referrals && packet.head.header.ans_count == 0) {
                          bool contains_referral = false;
                          for (size_t rec_index = 0; dns_parse_record_raw(offset, next, offset + len, &next, &rec)
-@@ -1506,7 +1507,11 @@
+@@ -1613,8 +1614,12 @@
+                             dns_class2str((dns_class) packet.head.question.class),
                              dns_rcode2str((dns_rcode) packet.head.header.rcode),
                              now.tv_sec, now.tv_nsec);
 +                    size_t parsed_records = 0;
@@ -27,7 +31,7 @@ diff --git a/src/main.c b/src/main.c
                          if (section == DNS_SECTION_ANSWER && section_index >= packet.head.header.ans_count) {
                              section_index = 0;
                              section++;
-@@ -1551,8 +1556,34 @@
+@@ -1661,10 +1666,36 @@
                      if (written > 0) {
                          json_flags[written - 1] = 0;
                      }
@@ -60,12 +64,13 @@ diff --git a/src/main.c b/src/main.c
 +                            (unsigned int) packet.head.header.ans_count,
 +                            (unsigned int) packet.head.header.auth_count,
 +                            (unsigned int) packet.head.header.add_count, wire_hex);
+ 
                      break;
 +                }
+ 
                  case OUTPUT_TEXT_SIMPLE: // Only print records from answer section that match the query name
                      if (context.format.print_question) {
-@@ -2707,13 +2738,17 @@
-         else if (strcmp(argv[i], "--verify-ip") == 0)
+@@ -2889,12 +2920,16 @@
          {
              context.cmd_args.verify_ip = true;
          }
