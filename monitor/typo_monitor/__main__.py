@@ -29,6 +29,8 @@ def parser():
     p.add_argument("--gowitness-path", help="Path to Gowitness 3.2.2")
     p.add_argument("--chrome-path", help="Path to Chrome/Chromium for captures")
     p.add_argument("--capture-workers", type=int, default=4, help="Concurrent browser captures")
+    p.add_argument("--web-timeout", type=float, default=3,
+                   help="HTTP/HTTPS response check timeout before browser captures, in seconds")
     p.add_argument("--capture-timeout", type=float, default=900, help="Total capture stage deadline in seconds")
     p.add_argument("--capture-driver", choices=["gorod", "chromedp"], default="gorod")
     commands = p.add_subparsers(dest="command", required=True)
@@ -87,7 +89,8 @@ def main(argv=None):
         from .screenshots import GowitnessCapture
         capturer = None if args.no_screenshots else GowitnessCapture(
             executable=args.gowitness_path, chrome_path=args.chrome_path,
-            timeout=args.capture_timeout, threads=args.capture_workers, driver=args.capture_driver)
+            timeout=args.capture_timeout, threads=args.capture_workers, driver=args.capture_driver,
+            probe_timeout=args.web_timeout)
         with MonitorService(args.data_dir, discovery=not args.no_discovery,
                             resolver=DnsResolver(args.resolver, args.dns_timeout, args.workers),
                             max_candidates=args.max_candidates,

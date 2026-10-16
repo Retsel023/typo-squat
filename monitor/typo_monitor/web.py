@@ -72,14 +72,57 @@ def _csv_cell(value):
     return text
 
 
+def _has_capture_image(capture):
+    if not isinstance(capture, dict) or capture.get("status") != "captured":
+        return False
+    relative = capture.get("relative_path")
+    if not isinstance(relative, str) or not relative or "\\" in relative:
+        return False
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts or path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+        return False
+    try:
+        UUID(capture.get("run_id", ""))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return capture.get("scheme") in {"http", "https"}
+
+
+def _saved_capture(attempt):
+    if _has_capture_image(attempt):
+        return attempt
+    previous = attempt.get("previous_capture") if isinstance(attempt, dict) else None
+    if (_has_capture_image(previous) and previous.get("domain") == attempt.get("domain")
+            and previous.get("scheme") == attempt.get("scheme") and previous.get("project_id") == attempt.get("project_id")):
+        return previous
+    return None
+
+
+def _capture_status(attempt):
+    if not attempt:
+        return "No screenshot"
+    error = str(attempt.get("error") or "").strip().lower()
+    timed_out = "timed out" in error or "timeout" in error or "deadline" in error
+    if error.startswith("website check"):
+        return "Website check timed out" if timed_out else "Website check uncertain"
+    if "no http response" in error:
+        return "No HTTP response"
+    if timed_out:
+        return "Capture timed out"
+    return "Screenshot unavailable"
+
+
 def _prepare_domain(domain):
-    """Collapse only a successful, same-run exact protocol duplicate."""
+    """Show recorded images, retaining old evidence and compact failed checks."""
     result = dict(domain)
     attempts = {item.get("scheme"): item for item in result.get("screenshots", [])
                 if isinstance(item, dict) and item.get("scheme") in {"http", "https"}}
-    result.update(gallery_schemes=["http", "https"], protocol_relation=None)
+    image_schemes = [scheme for scheme in ("http", "https") if _saved_capture(attempts.get(scheme))]
+    result.update(image_schemes=image_schemes, gallery_schemes=list(image_schemes),
+                  unavailable_schemes=[scheme for scheme in ("http", "https") if scheme not in image_schemes],
+                  protocol_relation=None)
     http, https = attempts.get("http"), attempts.get("https")
-    if (not http or not https or http.get("status") != "captured" or https.get("status") != "captured"
+    if (len(image_schemes) != 2 or not http or not https or http.get("status") != "captured" or https.get("status") != "captured"
             or not http.get("run_id") or http.get("run_id") != https.get("run_id")):
         return result
     for scheme, capture in (("http", http), ("https", https)):
@@ -102,6 +145,9 @@ def create_app(service):
     app.extensions["monitor_service"] = service
     app.jinja_env.filters["date"] = _date
     app.jinja_env.filters["records"] = _records
+    app.jinja_env.filters["saved_capture"] = _saved_capture
+    app.jinja_env.filters["capture_status"] = _capture_status
+    app.jinja_env.filters["has_image"] = _has_capture_image
 
     @app.before_request
     def protect_forms():
@@ -335,7 +381,7 @@ def create_app(service):
                                     "captured_at": capture.get("captured_at")})
             visual = capture.get("visual") or {}
             previous_run = visual.get("previous_run_id")
-            if capture.get("status") != "captured" or not previous_run or capture.get("scheme") not in {"http", "https"}:
+            if not _has_capture_image(capture) or not previous_run or capture.get("scheme") not in {"http", "https"}:
                 continue
             try:
                 previous_run = str(UUID(previous_run))
@@ -344,7 +390,7 @@ def create_app(service):
             if previous_run == capture.get("run_id"):
                 continue
             previous = service.store.get_capture(previous_run, domain, capture["scheme"])
-            if (previous and previous.get("status") == "captured" and previous.get("domain") == domain
+            if (_has_capture_image(previous) and previous.get("domain") == domain
                     and previous.get("project_id") == str(project_id) and previous.get("scheme") == capture["scheme"]
                     and previous.get("run_id") == previous_run):
                 comparisons.append({"scheme": capture["scheme"], "before": previous, "after": capture,

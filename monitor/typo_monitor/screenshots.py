@@ -11,6 +11,7 @@ import subprocess
 
 from .adapters import _run_command
 from .domains import normalize_domain
+from .website_probe import WebsiteProbe
 
 
 SUPPORTED_VERSION = "3.2.2"
@@ -37,6 +38,37 @@ def _row(domain, scheme):
             "status": "failed", "relative_path": None, "title": None,
             "http_status": None, "error": "No JSONL result was produced for this requested URL; see gowitness.log.",
             "captured_at": _now()}
+
+
+def _validated_preflight(diagnostics, requested):
+    if not isinstance(diagnostics, dict) or set(diagnostics) != set(requested):
+        raise ValueError("Website preflight must return exactly one result for every requested URL.")
+    validated = {}
+    for url, entry in diagnostics.items():
+        if (not isinstance(entry, dict) or entry.get("url") != url
+                or entry.get("status") not in {"http_response", "no_http_response", "unknown"}):
+            raise ValueError("Website preflight returned malformed URL/status metadata.")
+        code, error = entry.get("http_status"), entry.get("error")
+        if entry["status"] == "http_response":
+            if not isinstance(code, int) or isinstance(code, bool) or not 100 <= code <= 599:
+                raise ValueError("Responsive website preflight requires an HTTP status code.")
+        elif code is not None or not isinstance(error, str) or not error:
+            raise ValueError("Skipped website preflight requires an explicit diagnostic and no HTTP status.")
+        if (error is not None and not isinstance(error, str)
+                or entry.get("tls_error") is not None and not isinstance(entry["tls_error"], str)
+                or entry.get("tls_verified") is not None and not isinstance(entry["tls_verified"], bool)):
+            raise ValueError("Website preflight returned invalid diagnostic fields.")
+        try:
+            checked = datetime.fromisoformat(entry["checked_at"].replace("Z", "+00:00"))
+            if checked.utcoffset() is None:
+                raise ValueError
+        except (KeyError, AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("Website preflight requires an aware check timestamp.") from exc
+        validated[url] = {"url": url, "status": entry["status"], "http_status": code,
+                          "error": error, "tls_error": entry.get("tls_error"),
+                          "tls_verified": entry.get("tls_verified"),
+                          "checked_at": checked.astimezone(timezone.utc).isoformat()}
+    return validated
 
 
 def _image_path(workdir, filename):
@@ -73,7 +105,8 @@ class GowitnessCapture:
     binary are required. Browser downloads and filename inference are avoided.
     """
 
-    def __init__(self, executable=None, chrome_path=None, timeout=900, threads=4, driver="gorod"):
+    def __init__(self, executable=None, chrome_path=None, timeout=900, threads=4, driver="gorod",
+                 probe=None, probe_timeout=3, probe_workers=24):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("Screenshot timeout must be positive and finite.")
         if not isinstance(threads, int) or isinstance(threads, bool) or not 1 <= threads <= 32:
@@ -93,6 +126,10 @@ class GowitnessCapture:
         if driver not in {"gorod", "chromedp"}:
             raise ValueError("Capture driver must be gorod or chromedp.")
         self.driver = driver
+        # Validate even when a fixture probe is injected; no network runs here.
+        WebsiteProbe(timeout=probe_timeout, workers=probe_workers)
+        self.probe = probe
+        self.probe_timeout, self.probe_workers = probe_timeout, probe_workers
         self.cancel_event = None
 
     def _check_shutdown(self):
@@ -103,11 +140,17 @@ class GowitnessCapture:
     def _stage(results, detail, *, failed=False, issue=False, version=None):
         rows = [row for domain_rows in results.values() for row in domain_rows]
         captured = sum(row["status"] == "captured" for row in rows)
-        return {"status": "failed" if failed else "partial" if issue or captured != len(rows) else "ok",
+        unsuccessful = any(row["status"] in {"failed", "unavailable"} for row in rows)
+        counts = {status: sum(row.get("preflight", {}).get("status") == status for row in rows)
+                  for status in ("http_response", "no_http_response", "unknown")}
+        return {"status": "failed" if failed else "partial" if issue or unsuccessful or counts["unknown"] else "ok",
                 "detail": detail, "version": version, "required_version": SUPPORTED_VERSION,
                 "attempts": len(rows), "captured": captured,
                 "failed": sum(row["status"] == "failed" for row in rows),
-                "unavailable": sum(row["status"] == "unavailable" for row in rows)}
+                "unavailable": sum(row["status"] == "unavailable" for row in rows),
+                "eligible": counts["http_response"], "launched": sum(row.get("capture_queued", False) for row in rows),
+                "skipped": sum(row["status"] == "skipped" for row in rows),
+                **{"preflight_" + status: count for status, count in counts.items()}}
 
     def capture(self, candidates, workdir):
         self._check_shutdown()
@@ -116,17 +159,14 @@ class GowitnessCapture:
         requested = {row["url"]: row for rows in results.values() for row in rows}
         detected_version = None
         if not requested:
-            return results, {"status": "skipped", "detail": "No currently resolving candidates to capture.", "attempts": 0, "captured": 0}
+            stage = self._stage(results, "No currently resolving candidates to capture.")
+            return results, {**stage, "status": "skipped"}
 
         def unavailable(detail):
             for row in requested.values():
                 row.update(status="unavailable", error=detail)
             return results, self._stage(results, detail, failed=True, version=detected_version)
 
-        if not self.executable:
-            return unavailable("Gowitness is unavailable; install the pinned 3.2.2 binary.")
-        if not self.chrome_path or not shutil.which(self.chrome_path):
-            return unavailable("Chrome/Chromium is unavailable; configure an executable browser path.")
         workdir = Path(workdir).absolute()
         try:
             if workdir.is_symlink() or not workdir.is_dir():
@@ -135,10 +175,42 @@ class GowitnessCapture:
             screenshot_dir = workdir / "screenshots"
             if screenshot_dir.is_symlink() or (screenshot_dir.exists() and any(screenshot_dir.iterdir())):
                 raise ValueError("Screenshot output directory must be empty and must not be a symlink.")
-            screenshot_dir.mkdir(exist_ok=True)
             metadata = workdir / "gowitness.jsonl"
             if metadata.exists() or metadata.is_symlink():
                 raise ValueError("Existing Gowitness metadata cannot be reused for a new capture.")
+            preflight_file = workdir / "preflight.json"
+            if preflight_file.exists() or preflight_file.is_symlink():
+                raise ValueError("Existing website preflight cannot be reused for a new capture.")
+            probe = self.probe or WebsiteProbe(timeout=self.probe_timeout, workers=self.probe_workers)
+            probe.cancel_event = self.cancel_event
+            probe.run_id = getattr(self, "run_id", "manual")
+            diagnostics = probe.probe(list(requested))
+            self._check_shutdown()
+            try:
+                diagnostics = _validated_preflight(diagnostics, requested)
+            except ValueError as error:
+                with preflight_file.open("x", encoding="utf-8") as stream:
+                    json.dump({"error": str(error), "checked_at": _now()}, stream, indent=2)
+                raise
+            with preflight_file.open("x", encoding="utf-8") as stream:
+                json.dump(diagnostics, stream, indent=2)
+            for url, diagnostic in diagnostics.items():
+                row = requested[url]
+                row["preflight"] = diagnostic
+                if diagnostic["status"] != "http_response":
+                    prefix = "Website check uncertain: " if diagnostic["status"] == "unknown" else "No HTTP response: "
+                    error = diagnostic["error"]
+                    if not error.startswith(prefix):
+                        error = prefix + error
+                    row.update(status="skipped", error=error, captured_at=diagnostic["checked_at"])
+            requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"}
+            if not requested:
+                return results, self._stage(results, "No HTTP response endpoints qualified for browser capture; see preflight.json. Uncertain checks are retried on the next run.")
+            if not self.executable:
+                return unavailable("Gowitness is unavailable; install the pinned 3.2.2 binary.")
+            if not self.chrome_path or not shutil.which(self.chrome_path):
+                return unavailable("Chrome/Chromium is unavailable; configure an executable browser path.")
+            screenshot_dir.mkdir(exist_ok=True)
             with (workdir / "gowitness.version.txt").open("x", encoding="utf-8") as version_log:
                 version_result = _run_command(
                     [self.executable, "version"], cancel_event=self.cancel_event,
@@ -160,6 +232,8 @@ class GowitnessCapture:
                        "--threads", str(self.threads), "--chrome-path", self.chrome_path, "--driver", self.driver,
                        "--log-scan-errors", "--skip-html", "--skip-network-logs"]
             issue = None
+            for row in requested.values():
+                row["capture_queued"] = True
             try:
                 with (workdir / "gowitness.log").open("x", encoding="utf-8") as log:
                     outcome = _run_command(command, cancel_event=self.cancel_event, timeout=self.timeout,
@@ -227,7 +301,7 @@ class GowitnessCapture:
                     row["error"] = f"Screenshot artifact rejected: {error}"
                     continue
                 row.update(status="captured", relative_path=relative_path, error=None)
-            detail = f"Captured {sum(row['status'] == 'captured' for row in requested.values())} of {len(requested)} HTTP/HTTPS attempts."
+            detail = f"Captured {sum(row['status'] == 'captured' for row in requested.values())} of {len(requested)} HTTP-responsive endpoints; other attempts were skipped by preflight."
             if issue:
                 detail += " " + issue
             if malformed or foreign or duplicates:

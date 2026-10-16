@@ -422,7 +422,7 @@ class WebTests(unittest.TestCase):
         self.assertIn(self.capture_url(capture).encode(), page.data)
         self.assertIn(b"HTTPS", page.data)
         self.assertIn(b"HTTP", page.data)
-        self.assertIn(b"Not captured yet", page.data)
+        self.assertIn(b"No screenshot", page.data)
         self.assertIn(b"view=table", page.data)
         self.assertIn(b"hide_parked=1", page.data)
         self.assertIn(b"seed=example.com", page.data)
@@ -512,7 +512,7 @@ class WebTests(unittest.TestCase):
         page = self.client.get(f"/projects/{project['id']}/candidates/examp1e.com?view=table&seed=example.com")
         self.assertEqual(page.status_code, 200)
         self.assertIn(b"Original website references", page.data)
-        self.assertIn(b"Capture failed", page.data)
+        self.assertIn(b"Capture timed out", page.data)
         self.assertIn(b"&lt;img src=x", page.data)
         self.assertIn(b"&lt;script&gt;capture timeout", page.data)
         self.assertNotIn(b"<img src=x", page.data)
@@ -969,6 +969,134 @@ class WebTests(unittest.TestCase):
             page = self.client.get(path)
             self.assertIn(b'placeholder="Server default (24)"', page.data)
             self.assertNotIn(b'placeholder="Server default (20)"', page.data)
+
+    def test_sidebar_places_projects_between_overview_and_new_project(self):
+        clazing, other = self.project("Clazing"), self.project("Other client")
+        response = self.client.get(f"/projects/{clazing['id']}")
+        sidebar = response.get_data(as_text=True).split('<aside class="sidebar"', 1)[1].split('</aside>', 1)[0]
+        overview = sidebar.index(' Overview</a>')
+        first_project = sidebar.index(f'href="/projects/{clazing["id"]}"')
+        other_project = sidebar.index(f'href="/projects/{other["id"]}"')
+        create = sidebar.index('href="/projects/new"')
+        self.assertLess(overview, first_project)
+        self.assertLess(first_project, other_project)
+        self.assertLess(other_project, create)
+        self.assertEqual(self.project_links(response), {f'/projects/{clazing["id"]}': True, f'/projects/{other["id"]}': False})
+
+    def test_zero_image_candidate_uses_compact_protocol_results_in_gallery_and_review(self):
+        project = self.project()
+        http = self.capture(project, scheme="http", status="failed")
+        http["error"] = "Legacy capture produced no image"
+        https = self.capture(project, status="skipped")
+        https["error"] = "No HTTP response on HTTPS."
+        self.service.store.domains[project["id"]] = [{"domain": "examp1e.com", "status": "resolved", "records": [["A", "192.0.2.1"]], "screenshots": [http, https]}]
+        for path in (f"/projects/{project['id']}", f"/projects/{project['id']}/candidates/examp1e.com"):
+            page = self.client.get(path)
+            self.assertEqual(page.status_code, 200)
+            self.assertNotIn(b'<img ', page.data)
+            self.assertNotIn(b'<figure ', page.data)
+            self.assertNotIn(b'capture-placeholder', page.data)
+            self.assertIn(b'capture-status', page.data)
+            self.assertIn(b"Screenshot unavailable", page.data)
+            self.assertIn(b"No HTTP response", page.data)
+            self.assertIn(b"Resolves", page.data)
+            self.assertNotIn(b"No website", page.data)
+        self.assertIn(b"192.0.2.1", self.client.get(f"/projects/{project['id']}/candidates/examp1e.com").data)
+        gallery = self.client.get(f"/projects/{project['id']}")
+        self.assertIn(b">Domain details \xe2\x86\x97</a>", gallery.data)
+        self.assertNotIn(b">Visual review \xe2\x86\x97</a>", gallery.data)
+
+    def test_one_image_candidate_uses_full_width_and_compact_other_protocol(self):
+        project = self.project()
+        http = self.capture(project, scheme="http")
+        https = self.capture(project, status="unavailable")
+        self.service.store.domains[project["id"]] = [{"domain": "examp1e.com", "status": "resolved", "screenshots": [http, https]}]
+        for path in (f"/projects/{project['id']}", f"/projects/{project['id']}/candidates/examp1e.com"):
+            page = self.client.get(path)
+            self.assertEqual(page.status_code, 200)
+            self.assertEqual(page.data.count(b'<img '), 1)
+            self.assertEqual(page.data.count(b'<figure '), 1)
+            self.assertIn(b'single-capture-pair', page.data)
+            self.assertIn(b"Screenshot unavailable", page.data)
+            self.assertNotIn(b'capture-placeholder', page.data)
+            self.assertIn(('src="' + self.capture_url(http) + '"').encode(), page.data)
+        gallery = self.client.get(f"/projects/{project['id']}")
+        self.assertIn(b">Visual review \xe2\x86\x97</a>", gallery.data)
+        self.assertNotIn(b">Domain details \xe2\x86\x97</a>", gallery.data)
+
+    def test_capture_diagnostics_distinguish_website_checks_from_capture_timeouts(self):
+        project = self.project()
+        capture = self.capture(project, status="skipped")
+        self.service.store.domains[project["id"]] = [{"domain": "examp1e.com", "status": "resolved", "screenshots": [capture]}]
+        for error, label in (
+            ("Website check uncertain: HTTPS TLS negotiation failed", "Website check uncertain"),
+            ("Website check uncertain: ReadTimeout", "Website check timed out"),
+            ("No HTTP response: Connection refused", "No HTTP response"),
+            ("Gowitness capture exceeded its deadline; completed artifacts were retained.", "Capture timed out"),
+            ("Legacy screenshot unavailable", "Screenshot unavailable"),
+        ):
+            with self.subTest(error=error):
+                capture["error"] = error
+                page = self.client.get(f"/projects/{project['id']}")
+                self.assertIn(f"<span>{label}</span>".encode(), page.data)
+                self.assertNotIn(b"No website", page.data)
+
+    def test_two_successful_protocol_images_remain_separate_without_duplicate_metadata(self):
+        project = self.project()
+        https = self.capture(project)
+        http = self.capture(project, scheme="http", run=self.service.store.get_run(https["run_id"]))
+        self.service.store.domains[project["id"]] = [{"domain": "examp1e.com", "status": "resolved", "screenshots": [http, https]}]
+        page = self.client.get(f"/projects/{project['id']}")
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.data.count(b'<img '), 2)
+        self.assertEqual(page.data.count(b'<figure '), 2)
+        self.assertNotIn(b'single-capture-pair', page.data)
+        self.assertNotIn(b'capture-statuses', page.data)
+        self.assertNotIn(b'capture-placeholder', page.data)
+
+    def test_captured_metadata_without_a_usable_image_path_is_not_an_image_panel(self):
+        project = self.project()
+        capture = self.capture(project)
+        self.service.store.domains[project["id"]] = [{"domain": "examp1e.com", "status": "resolved", "screenshots": [capture]}]
+        for relative in (None, "", "../outside.png", "screenshots/unsafe.svg"):
+            with self.subTest(relative=relative):
+                capture["relative_path"] = relative
+                page = self.client.get(f"/projects/{project['id']}")
+                self.assertEqual(page.status_code, 200)
+                self.assertNotIn(b'<img ', page.data)
+                self.assertNotIn(b'<figure ', page.data)
+                self.assertIn(b"Screenshot unavailable", page.data)
+
+    def test_failed_timeout_with_previous_image_keeps_old_date_and_uncertain_current_state(self):
+        project = self.project()
+        old = self.capture(project)
+        old["captured_at"] = "2026-10-15T09:30:00+00:00"
+        latest = self.capture(project, status="failed")
+        latest.update(error="Website check timed out", previous_capture=old)
+        self.service.store.domains[project["id"]] = [{"domain": "examp1e.com", "status": "resolved", "screenshots": [latest]}]
+        page = self.client.get(f"/projects/{project['id']}")
+        self.assertEqual(page.data.count(b'<img '), 1)
+        self.assertIn(b"Previous capture", page.data)
+        self.assertIn(b"15 Oct 2026", page.data)
+        self.assertIn(b"Website check timed out", page.data)
+        self.assertIn(b"Comparison uncertain", page.data)
+        self.assertNotIn(b"No website", page.data)
+
+    def test_original_reference_without_images_uses_compact_status(self):
+        project = self.project()
+        candidate = self.capture(project)
+        original = self.capture(project, domain="example.com", status="failed")
+        self.service.store.domains[project["id"]] = [
+            {"domain": "examp1e.com", "status": "resolved", "sources": ["example.com"], "screenshots": [candidate]},
+            {"domain": "example.com", "status": "resolved", "screenshots": [original]},
+        ]
+        page = self.client.get(f"/projects/{project['id']}/candidates/examp1e.com")
+        self.assertEqual(page.status_code, 200)
+        references = page.data.split(b'id="original-captures"', 1)[1].split(b'</section>', 1)[0]
+        self.assertNotIn(b'<img ', references)
+        self.assertNotIn(b'<figure ', references)
+        self.assertIn(b"Screenshot unavailable", references)
+        self.assertIn(b"No screenshot", references)
 
 
 if __name__ == "__main__":

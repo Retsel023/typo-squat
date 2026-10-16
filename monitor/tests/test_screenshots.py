@@ -25,6 +25,23 @@ def metadata(url, filename="asset.png", **kwargs):
             "failed_reason": "", "is_pdf": False, **kwargs}
 
 
+class FixtureProbe:
+    def __init__(self, statuses=None):
+        self.statuses = statuses or {}
+        self.calls = []
+
+    def probe(self, urls):
+        self.calls.append(list(urls))
+        result = {}
+        for url in urls:
+            status = self.statuses.get(url, "http_response")
+            result[url] = {"url": url, "status": status, "http_status": 200 if status == "http_response" else None,
+                           "checked_at": "2026-10-16T10:20:30+00:00", "tls_verified": None, "tls_error": None,
+                           "error": None if status == "http_response" else
+                                    "HTTP preflight uncertain: timeout." if status == "unknown" else "No HTTP response observed: connection refused."}
+        return result
+
+
 class CaptureTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -35,7 +52,7 @@ class CaptureTests(unittest.TestCase):
         self.chrome = self.root / "chrome"
         self.chrome.write_text("fixture executable", encoding="utf-8")
         self.chrome.chmod(0o755)
-        self.capture = GowitnessCapture("fixture-gowitness", str(self.chrome))
+        self.capture = GowitnessCapture("fixture-gowitness", str(self.chrome), probe=FixtureProbe())
         self.commands = []
 
     def runner(self, scan, *, version="3.2.2"):
@@ -84,6 +101,7 @@ class CaptureTests(unittest.TestCase):
             result, stage = self.capture.capture(["example.com"], self.workdir)
             run.assert_not_called()
         self.assertEqual(stage["status"], "failed")
+        self.assertEqual((stage["eligible"], stage["launched"]), (2, 0))
         self.assertTrue(all(row["status"] == "unavailable" for row in result["example.com"]))
 
     def test_missing_browser_does_not_trigger_tool_or_browser_download(self):
@@ -100,6 +118,7 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(len(self.commands), 1)
         self.assertEqual(stage["status"], "failed")
         self.assertIn("requires 3.2.2", result["example.com"][0]["error"])
+        self.assertEqual((stage["eligible"], stage["launched"]), (2, 0))
 
     def test_malformed_unrequested_and_missing_metadata_never_make_fake_images(self):
         def scan(args, kwargs):
@@ -212,6 +231,120 @@ class CaptureTests(unittest.TestCase):
         with patch("typo_monitor.screenshots._run_command", self.runner(scan)):
             with self.assertRaisesRegex(RuntimeError, "canceled"):
                 self.capture.capture(["example.com"], self.workdir)
+
+    def test_no_http_responses_skip_both_rows_without_any_tool_or_browser_call(self):
+        self.capture.probe = FixtureProbe({f"{scheme}://example.com:{port}": "no_http_response"
+                                          for scheme, port in (("http", 80), ("https", 443))})
+        self.capture.executable = None
+        with patch("typo_monitor.screenshots._run_command") as run:
+            result, stage = self.capture.capture(["example.com"], self.workdir)
+            run.assert_not_called()
+        self.assertEqual(stage["status"], "ok")
+        self.assertEqual((stage["attempts"], stage["launched"], stage["skipped"]), (2, 0, 2))
+        self.assertEqual(stage["preflight_no_http_response"], 2)
+        self.assertTrue(all(row["status"] == "skipped" and row["relative_path"] is None
+                            and row["captured_at"] == "2026-10-16T10:20:30+00:00" for row in result["example.com"]))
+        self.assertEqual(set(json.loads((self.workdir / "preflight.json").read_text())),
+                         {"http://example.com:80", "https://example.com:443"})
+        self.assertFalse((self.workdir / "gowitness.version.txt").exists())
+
+    def test_constructor_does_not_make_requests_or_launch_tools(self):
+        with (patch("typo_monitor.website_probe.requests.Session") as session,
+              patch("typo_monitor.screenshots._run_command") as run):
+            capture = GowitnessCapture("fixture-gowitness", str(self.chrome), probe_timeout=1.5, probe_workers=3)
+            session.assert_not_called()
+            run.assert_not_called()
+        self.assertEqual((capture.probe_timeout, capture.probe_workers), (1.5, 3))
+
+    def test_mixed_preflight_counts_preserve_every_protocol_row(self):
+        self.capture.probe = FixtureProbe({"http://unknown.example:80": "unknown", "https://unknown.example:443": "unknown",
+                                          "http://closed.example:80": "no_http_response", "https://closed.example:443": "no_http_response"})
+
+        def scan(args, kwargs):
+            self.assertEqual(Path(args[args.index("-f") + 1]).read_text().splitlines(),
+                             ["http://live.example:80", "https://live.example:443"])
+            self.write_results(args, [metadata("http://live.example:80", "plain.png"),
+                                      metadata("https://live.example:443", "secure.png")],
+                               {"plain.png": PNG, "secure.png": PNG})
+            return SimpleNamespace(returncode=0)
+
+        with patch("typo_monitor.screenshots._run_command", self.runner(scan)):
+            result, stage = self.capture.capture(["live.example", "unknown.example", "closed.example"], self.workdir)
+        self.assertEqual(stage["status"], "partial")
+        self.assertEqual({key: stage[key] for key in ("attempts", "captured", "launched", "skipped", "preflight_http_response",
+                                                      "preflight_no_http_response", "preflight_unknown")},
+                         {"attempts": 6, "captured": 2, "launched": 2, "skipped": 4,
+                          "preflight_http_response": 2, "preflight_no_http_response": 2, "preflight_unknown": 2})
+        self.assertTrue(all(len(rows) == 2 for rows in result.values()))
+        self.assertTrue(all(row["error"].startswith("Website check uncertain: ") for row in result["unknown.example"]))
+        self.assertTrue(all(row["error"].startswith("No HTTP response: ") for row in result["closed.example"]))
+
+    def test_uncertain_preflight_skips_for_now_and_keeps_stage_partial(self):
+        self.capture.probe = FixtureProbe({"http://example.com:80": "unknown", "https://example.com:443": "unknown"})
+        with patch("typo_monitor.screenshots._run_command") as run:
+            result, stage = self.capture.capture(["example.com"], self.workdir)
+            run.assert_not_called()
+        self.assertEqual(stage["status"], "partial")
+        self.assertEqual(stage["preflight_unknown"], 2)
+        self.assertTrue(all("uncertain" in row["error"] and row["status"] == "skipped" for row in result["example.com"]))
+
+    def test_only_http_responsive_endpoint_is_sent_and_intentional_skip_is_not_partial(self):
+        self.capture.probe = FixtureProbe({"https://example.com:443": "no_http_response"})
+
+        def scan(args, kwargs):
+            self.assertEqual(Path(args[args.index("-f") + 1]).read_text().splitlines(), ["http://example.com:80"])
+            self.write_results(args, [metadata("http://example.com:80", response_code=403)], {"asset.png": PNG})
+            return SimpleNamespace(returncode=0)
+
+        with patch("typo_monitor.screenshots._run_command", self.runner(scan)):
+            result, stage = self.capture.capture(["example.com"], self.workdir)
+        self.assertEqual(stage["status"], "ok")
+        self.assertEqual((stage["captured"], stage["launched"], stage["skipped"]), (1, 1, 1))
+        self.assertEqual([row["status"] for row in result["example.com"]], ["captured", "skipped"])
+
+    def test_malformed_or_incomplete_probe_mapping_fails_without_running_capture(self):
+        correct = FixtureProbe().probe(["http://example.com:80", "https://example.com:443"])
+        variants = [{}, {"http://foreign.example:80": next(iter(correct.values()))}]
+        for field, value in (("status", "unchecked"), ("http_status", "200"), ("checked_at", "not a timestamp")):
+            broken = {url: dict(row) for url, row in correct.items()}
+            broken["http://example.com:80"][field] = value
+            variants.append(broken)
+        for index, broken in enumerate(variants):
+            with self.subTest(variant=index):
+                directory = self.root / f"invalid-{index}"
+                directory.mkdir()
+                probe = SimpleNamespace(probe=lambda urls, broken=broken: broken)
+                self.capture.probe = probe
+                with patch("typo_monitor.screenshots._run_command") as run:
+                    result, stage = self.capture.capture(["example.com"], directory)
+                    run.assert_not_called()
+                self.assertEqual(stage["status"], "failed")
+                self.assertTrue(all(row["status"] == "failed" and "preflight" in row["error"].lower()
+                                    for row in result["example.com"]))
+                self.assertIn("error", json.loads((directory / "preflight.json").read_text()))
+
+    def test_preflight_is_repeated_next_run_and_cancellation_propagates(self):
+        probe = FixtureProbe({"http://example.com:80": "unknown", "https://example.com:443": "unknown"})
+        self.capture.probe = probe
+        with patch("typo_monitor.screenshots._run_command"):
+            self.capture.capture(["example.com"], self.workdir)
+            next_directory = self.root / "next-run"
+            next_directory.mkdir()
+            self.capture.capture(["example.com"], next_directory)
+        self.assertEqual(len(probe.calls), 2)
+        self.capture.cancel_event = threading.Event()
+
+        def stop(urls):
+            self.capture.cancel_event.set()
+            return FixtureProbe().probe(urls)
+
+        self.capture.probe = SimpleNamespace(probe=stop)
+        stopped_directory = self.root / "stopped-run"
+        stopped_directory.mkdir()
+        with patch("typo_monitor.screenshots._run_command") as run:
+            with self.assertRaisesRegex(RuntimeError, "canceled"):
+                self.capture.capture(["example.com"], stopped_directory)
+            run.assert_not_called()
 
 
 if __name__ == "__main__":

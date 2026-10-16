@@ -85,6 +85,15 @@ MassDNS command. DNS work is refilled as checks finish, keeping available
 workers busy without waiting for a whole batch. All inventory names are queried
 again on every run; generation caching never substitutes for fresh DNS.
 
+Before opening Chromium, each resolving domain receives lightweight HTTP and
+HTTPS checks on ports 80 and 443. Only responding endpoints are passed to
+Gowitness; redirects and HTTP error responses still qualify. The check uses the
+run's DNS worker limit and a 3-second timeout (`--web-timeout` in the native CLI).
+A timeout remains uncertain. All endpoints are checked again on later scans.
+DNS-only domains stay visible, with compact protocol status instead of empty
+screenshot panels. A previous successful image is labelled as an older capture.
+Detailed checks are retained in `/data/runs/RUN_UUID/preflight.json`.
+
 ## Follow an actual scan
 
 ```sh

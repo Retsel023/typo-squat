@@ -1,6 +1,7 @@
 """DNS settings are frozen at enqueue time without leaking across clients."""
 
 import os
+from datetime import datetime, timezone
 import tempfile
 import threading
 import unittest
@@ -116,3 +117,45 @@ class DnsSettingsTests(unittest.TestCase):
         with patch.dict(os.environ, {"TYPO_DNS_WORKERS": "20"}):
             self.assertEqual(parser().parse_args(["serve"]).workers, 20)
             self.assertEqual(parser().parse_args(["--workers", "37", "serve"]).workers, 37)
+
+    def test_skipped_website_checks_keep_dns_inventory_and_can_capture_on_a_later_run(self):
+        from PIL import Image
+
+        class Capture:
+            responding = False
+
+            def capture(adapter, domains, workdir):
+                result = {}
+                if adapter.responding:
+                    (workdir / "screenshots").mkdir()
+                for domain in domains:
+                    rows = result[domain] = []
+                    for scheme in ("http", "https"):
+                        path = f"screenshots/{scheme}.png" if adapter.responding else None
+                        if path:
+                            Image.new("RGB", (8, 8), "white").save(workdir / path)
+                        rows.append({"scheme": scheme, "url": f"{scheme}://{domain}",
+                                     "status": "captured" if adapter.responding else "skipped",
+                                     "relative_path": path,
+                                     "http_status": 200 if adapter.responding else None,
+                                     "error": None if adapter.responding else "No HTTP response: connection refused.",
+                                     "captured_at": datetime.now(timezone.utc).isoformat()})
+                return result, {"status": "ok"}
+
+        self.service.capturer = capture = Capture()
+        project = self.service.create_project("DNS only", ["example.com"], dns_workers=20)
+        first = self.service.scan_now(project["id"])
+        self.assertEqual(first["status"], "completed")
+        self.assertTrue(first["is_baseline"])
+        self.assertEqual(capture.probe_workers, 20)
+        domain = self.service.store.get_domain(project["id"], "example.com")
+        self.assertEqual(domain["status"], "resolved")
+        self.assertEqual([row["status"] for row in domain["screenshots"]], ["skipped", "skipped"])
+        capture.responding = True
+        second = self.service.scan_now(project["id"])
+        self.assertEqual(second["status"], "completed")
+        self.assertEqual(second["events"], [])
+        self.assertEqual(len(self.resolver.calls), 2, "DNS was not checked again")
+        self.assertEqual([row["status"] for row in self.service.store.get_domain(project["id"], "example.com")["screenshots"]],
+                         ["captured", "captured"])
+        self.assertEqual(len(self.service.store.list_captures(project["id"], "example.com")), 4)

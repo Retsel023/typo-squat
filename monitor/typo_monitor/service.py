@@ -257,6 +257,8 @@ class MonitorService:
         self.resolver.workers = workers
         if self.parking_classifier is not None:
             self.parking_classifier.workers = workers
+        if self.capturer is not None:
+            self.capturer.probe_workers = workers
         for adapter in (self.resolver, self.generator, self.discoverer, self.parking_classifier, self.capturer):
             if adapter is not None:
                 adapter.cancel_event = signal
@@ -323,7 +325,7 @@ class MonitorService:
             screenshots = None
             if self.capturer:
                 resolving = sorted(domain for domain, observation in observations.items() if observation["status"] == "resolved")
-                LOG.info("Run %s: screenshots starting for %d resolving domains (HTTP and HTTPS)", run_id, len(resolving))
+                LOG.info("Run %s: website checks starting for %d resolving domains; screenshots only for responding HTTP/HTTPS endpoints", run_id, len(resolving))
                 try:
                     screenshots, source_status["screenshots"] = self.capturer.capture(resolving, workdir)
                 except Exception as exc:

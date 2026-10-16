@@ -95,6 +95,15 @@ to 900 seconds per batch, and `--capture-driver` to `gorod`; `chromedp` is also
 available. Missing binaries and individual HTTP/HTTPS failures are displayed.
 The Docker image already includes the required capture tools.
 
+Before Gowitness, lightweight HTTP and HTTPS checks test each resolving domain
+on ports 80 and 443. Only responding endpoints reach the browser. Any HTTP
+status qualifies, including redirects, 403 and 404; timeouts remain uncertain.
+Use `--web-timeout` to change the 3-second check timeout. Probe concurrency uses
+the run's DNS worker count, independently of the 4 browser workers. Results are
+saved in `preflight.json` and refreshed on every run. Domains without a responding
+website remain in DNS inventory, with compact status rows instead of empty
+screenshot frames. An older saved screenshot is explicitly labelled as previous.
+
 The Python orchestration avoids Bash, cron, `flock` binaries, and MassDNS.
 Native Windows compatibility has not been tested; Linux is the target.
 
