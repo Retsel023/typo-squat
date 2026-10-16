@@ -15,6 +15,7 @@ import dns.resolver
 
 from .domains import normalize_domain
 from .concurrency import bounded_map
+from .adapters import _report_progress
 
 
 # Provider-published parking endpoints; sources and limitations: docs/PARKING.md.
@@ -135,6 +136,18 @@ class ParkingClassifier:
         if not isinstance(observations, dict):
             raise ValueError("Parking observations must be a domain mapping.")
         enriched, pending = {}, {}
+        callback = getattr(self, "progress_callback", None)
+        processed = 0
+        counts = {"likely_parked": 0, "not_detected": 0, "uncertain": 0, "queried": 0, "not_checked": 0}
+        _report_progress(callback, "parking", current=0, total=len(observations), metrics=counts)
+
+        def completed(result, *, checked=True):
+            nonlocal processed
+            processed += 1
+            counts[result["status"] if result["status"] in {"likely_parked", "not_detected"} else "uncertain"] += 1
+            counts["not_checked"] += not checked
+            _report_progress(callback, "parking", current=processed, total=len(observations), metrics=counts)
+
         for original_domain, observation in observations.items():
             self._check_shutdown()
             if not isinstance(observation, dict):
@@ -144,15 +157,18 @@ class ParkingClassifier:
                 enriched[original_domain]["parking"] = _result(
                     "unknown", ["No current successful DNS observation; parking was not checked."],
                 )
+                completed(enriched[original_domain]["parking"], checked=False)
                 continue
             try:
                 domain = normalize_domain(original_domain)
             except ValueError:
                 enriched[original_domain]["parking"] = _result("unknown", ["Invalid candidate name; parking was not checked."])
+                completed(enriched[original_domain]["parking"], checked=False)
                 continue
             hint = self._cname_hint(domain, observation)
             if hint is not None:
                 enriched[original_domain]["parking"] = hint
+                completed(hint)
             else:
                 pending.setdefault(domain, []).append(original_domain)
 
@@ -160,11 +176,13 @@ class ParkingClassifier:
         # survives a subsequent run, so parked-to-active transitions stay visible.
         names = list(pending)
         with closing(bounded_map(self._lookup_ns, names, workers=self.workers,
-                                 check_cancel=self._check_shutdown, thread_name_prefix="parking")) as completed:
-            for domain, result in completed:
+                                 check_cancel=self._check_shutdown, thread_name_prefix="parking")) as lookups:
+            for domain, result in lookups:
+                counts["queried"] += 1
                 for original_domain in pending[domain]:
                     enriched[original_domain]["parking"] = _result(
                         result["status"], result["evidence"], result["provider"],
                     )
+                    completed(result)
         self._check_shutdown()
         return enriched

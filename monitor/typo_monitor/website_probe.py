@@ -13,6 +13,7 @@ from urllib3.util import Timeout
 from urllib3.exceptions import NameResolutionError
 
 from .concurrency import bounded_map
+from .adapters import _report_progress
 
 LOG = logging.getLogger(__name__)
 
@@ -105,12 +106,21 @@ class WebsiteProbe:
                 raise ValueError("Website probes require explicit HTTP/HTTPS URLs without credentials or fragments.")
         results = {}
         counts = dict.fromkeys(("http_response", "no_http_response", "unknown"), 0)
+        callback = getattr(self, "progress_callback", None)
+
+        def progress():
+            _report_progress(callback, "websites", current=len(results), total=len(requested),
+                             metrics={"response": counts["http_response"], "no_response": counts["no_http_response"],
+                                      "uncertain": counts["unknown"]})
+
+        progress()
         last_report = time.monotonic()
         with closing(bounded_map(self._probe_one, requested, workers=self.workers,
                                  check_cancel=self._check_cancel, thread_name_prefix="website")) as completed:
             for url, diagnostic in completed:
                 results[url] = diagnostic
                 counts[diagnostic["status"]] += 1
+                progress()
                 if time.monotonic() - last_report >= 5 or len(results) == len(requested):
                     LOG.info("Run %s: website preflight %d/%d checked; %d HTTP responses, %d no HTTP response, %d uncertain",
                              getattr(self, "run_id", "manual"), len(results), len(requested), counts["http_response"],

@@ -102,9 +102,21 @@ docker compose logs -f --tail=100 monitor
 
 Logs include the run UUID and transitions through discovery, generation/reuse,
 DNS, parking, screenshots and image comparison. DNS progress reports checked,
-resolved, negative and uncertain counts. These are stage/count updates, not an
-estimated completion time. The run page refreshes its status while work runs;
-accepted findings appear after the run completes.
+resolved, negative and uncertain counts. The scan details page shows live stage
+counts and an expandable **Live output** panel with activity and actual tool
+output. It updates every four seconds while the panel is open, preserving your
+reading position. Counts describe the current stage; accepted findings appear
+after the run completes.
+
+The page displays escaped plain text with terminal controls removed. Only
+explicit tool log/output names are read, capped at eight recent sources,
+12 KiB each and 64 KiB total. Output may arrive in batches because tools buffer
+their writes. Python DNS checks show activity and counters instead of external
+command output. Progress snapshots and the latest 200 activity messages are
+saved under `/data/progress/`, separately from accepted findings. Old runs can
+show retained tool logs, but detailed counters require a scan using this
+version. Rebuild after the current scan finishes, since recreating the service
+interrupts the worker.
 
 Tool-specific output is stored under `/data/runs/RUN_UUID/`. Once screenshot
 capture has started, inspect its log without installing host tools:

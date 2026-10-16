@@ -49,8 +49,20 @@ docker compose logs -f --tail=100 monitor
 The application logs each run UUID and its discovery, generation/cache reuse,
 DNS, parking, screenshot and image-comparison stages. DNS progress includes
 checked/resolved/negative/uncertain counts. Native runs print the same messages
-to their terminal. These messages describe actual stages and counts rather than
-an estimated completion time; the run page refreshes status while work runs.
+to their terminal. The scan details page also shows the current stage and its
+counts, with an expandable **Live output** panel for activity and actual tool
+output. It polls every four seconds, including while the output is open, and
+preserves your reading position. Counts describe the current stage rather than
+an estimated completion time or overall percentage.
+
+Tool output is displayed as escaped plain text with terminal controls removed.
+The page reads only explicit tool log/output names, up to eight recent sources,
+12 KiB per source and 64 KiB in total. Tool buffering can delay new lines; Python
+DNS checks produce their own activity and counters. Progress snapshots and the
+latest 200 activity messages live under `/data/progress/`, separate from
+accepted findings. Older runs can show retained tool logs, but new progress
+counters are recorded only by this version. Accepted findings appear when a
+scan finishes.
 
 Detailed tool logs remain in `/data/runs/RUN_UUID/`, including `generator.log`
 when generation was needed, `gowitness.log` when captures were attempted, and
@@ -61,7 +73,8 @@ docker compose exec monitor tail -n 50 /data/runs/RUN_UUID/gowitness.log
 ```
 
 After updating application source, use `docker compose up --build -d` to rebuild
-and recreate the image while retaining its named volume. The separate
+and recreate the image while retaining its named volume. Let an active scan
+finish first; recreating the service interrupts its worker. The separate
 [standalone profile](../standalone/README.md) documents using host port 5057 next
 to an existing native listener on 5055, and explains their separate data stores.
 

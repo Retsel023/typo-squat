@@ -7,9 +7,10 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 
-from .adapters import _run_command
+from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
 from .website_probe import WebsiteProbe
 
@@ -98,6 +99,82 @@ def _image_path(workdir, filename):
     return resolved.relative_to(workdir).as_posix()
 
 
+class _JsonlProgress:
+    """Read bounded, complete records for telemetry; final validation stays separate."""
+
+    _MAX_LINE = 1024 * 1024
+    _MAX_TICK_BYTES = 4 * 1024 * 1024
+
+    def __init__(self, path, workdir, requested, callback, metrics):
+        self.path, self.workdir = path, workdir
+        self.requested, self.callback = set(requested), callback
+        self.metrics = dict(metrics)
+        self.offset, self.identity = 0, None
+        self.pending = bytearray()
+        self.discarding = False
+        self.seen, self.failed = set(), set()
+
+    def _record(self, line):
+        try:
+            record = json.loads(line)
+        except (UnicodeError, ValueError, TypeError, RecursionError):
+            return
+        if not isinstance(record, dict) or not isinstance(record.get("url"), str):
+            return
+        url = record["url"]
+        if url not in self.requested:
+            return
+        self.seen.add(url)
+        if record.get("failed") is True:
+            self.failed.add(url)
+
+    def _consume(self, chunk):
+        pieces = chunk.split(b"\n")
+        for index, piece in enumerate(pieces):
+            complete = index < len(pieces) - 1
+            if not self.discarding:
+                if len(self.pending) + len(piece) > self._MAX_LINE:
+                    self.pending.clear()
+                    self.discarding = True
+                else:
+                    self.pending.extend(piece)
+            if complete:
+                if not self.discarding and self.pending:
+                    self._record(self.pending)
+                self.pending.clear()
+                self.discarding = False
+
+    def poll(self):
+        try:
+            if self.path.is_symlink() or not self.path.resolve().is_relative_to(self.workdir):
+                return
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            descriptor = os.open(self.path, flags)
+            with os.fdopen(descriptor, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    return
+                identity = (info.st_dev, info.st_ino)
+                if identity != self.identity or info.st_size < self.offset:
+                    self.offset, self.identity = 0, identity
+                    self.pending.clear()
+                    self.discarding = False
+                stream.seek(self.offset)
+                remaining = self._MAX_TICK_BYTES
+                while remaining > 0:
+                    chunk = stream.read(min(64 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.offset += len(chunk)
+                    remaining -= len(chunk)
+                    self._consume(chunk)
+        except (OSError, ValueError):
+            return
+        _report_progress(self.callback, "screenshots", current=len(self.seen), total=len(self.requested),
+                         metrics={**self.metrics, "reported": len(self.seen),
+                                  "reported_failed": len(self.failed), "metadata_bytes": self.offset})
+
+
 class GowitnessCapture:
     """Capture HTTP and HTTPS independently without modifying DNS observations.
 
@@ -158,6 +235,7 @@ class GowitnessCapture:
         results = {domain: [_row(domain, scheme) for scheme in ("http", "https")] for domain in domains}
         requested = {row["url"]: row for rows in results.values() for row in rows}
         detected_version = None
+        callback = getattr(self, "progress_callback", None)
         if not requested:
             stage = self._stage(results, "No currently resolving candidates to capture.")
             return results, {**stage, "status": "skipped"}
@@ -165,7 +243,9 @@ class GowitnessCapture:
         def unavailable(detail):
             for row in requested.values():
                 row.update(status="unavailable", error=detail)
-            return results, self._stage(results, detail, failed=True, version=detected_version)
+            stage = self._stage(results, detail, failed=True, version=detected_version)
+            _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
+            return results, stage
 
         workdir = Path(workdir).absolute()
         try:
@@ -184,6 +264,7 @@ class GowitnessCapture:
             probe = self.probe or WebsiteProbe(timeout=self.probe_timeout, workers=self.probe_workers)
             probe.cancel_event = self.cancel_event
             probe.run_id = getattr(self, "run_id", "manual")
+            probe.progress_callback = callback
             diagnostics = probe.probe(list(requested))
             self._check_shutdown()
             try:
@@ -204,6 +285,9 @@ class GowitnessCapture:
                         error = prefix + error
                     row.update(status="skipped", error=error, captured_at=diagnostic["checked_at"])
             requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"}
+            progress_metrics = {"eligible": len(requested), "launched": 0,
+                                "skipped": sum(row["status"] == "skipped" for rows in results.values() for row in rows)}
+            _report_progress(callback, "screenshots", current=0, total=len(requested), metrics=progress_metrics)
             if not requested:
                 return results, self._stage(results, "No HTTP response endpoints qualified for browser capture; see preflight.json. Uncertain checks are retried on the next run.")
             if not self.executable:
@@ -234,15 +318,20 @@ class GowitnessCapture:
             issue = None
             for row in requested.values():
                 row["capture_queued"] = True
+            progress_metrics["launched"] = len(requested)
+            monitor = _JsonlProgress(metadata, workdir, requested, callback, progress_metrics) if callable(callback) else None
             try:
                 with (workdir / "gowitness.log").open("x", encoding="utf-8") as log:
                     outcome = _run_command(command, cancel_event=self.cancel_event, timeout=self.timeout,
-                                           stdout=log, stderr=subprocess.STDOUT, shell=False, cwd=workdir)
+                                           stdout=log, stderr=subprocess.STDOUT, shell=False, cwd=workdir,
+                                           **({"on_tick": monitor.poll} if monitor is not None else {}))
                 if outcome.returncode:
                     issue = f"Gowitness exited with code {outcome.returncode}; see gowitness.log."
             except subprocess.TimeoutExpired:
                 issue = "Gowitness capture exceeded its deadline; completed artifacts were retained. See gowitness.log."
             self._check_shutdown()
+            if monitor is not None:
+                monitor.poll()
             malformed, foreign, duplicates = 0, 0, set()
             records = {}
             if metadata.exists():
@@ -306,7 +395,9 @@ class GowitnessCapture:
                 detail += " " + issue
             if malformed or foreign or duplicates:
                 detail += f" Ignored metadata: {malformed} malformed, {foreign} unrequested, {len(duplicates)} duplicate URLs."
-            return results, self._stage(results, detail, issue=bool(issue or malformed or foreign or duplicates), version=detected_version)
+            stage = self._stage(results, detail, issue=bool(issue or malformed or foreign or duplicates), version=detected_version)
+            _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
+            return results, stage
         except (FileNotFoundError, PermissionError) as error:
             return unavailable(f"Screenshot tooling or output path unavailable: {type(error).__name__}: {error}")
         except subprocess.TimeoutExpired:
@@ -315,4 +406,6 @@ class GowitnessCapture:
             detail = f"Screenshot capture could not complete: {type(error).__name__}: {error}"
             for row in requested.values():
                 row.update(status="failed", relative_path=None, error=detail)
-            return results, self._stage(results, detail, failed=True, version=detected_version)
+            stage = self._stage(results, detail, failed=True, version=detected_version)
+            _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
+            return results, stage

@@ -17,6 +17,7 @@ from flask import (
 
 from .domains import normalize_domain, parse_domains
 from .handoff import review_selection
+from .progress import read_progress, read_tool_output
 
 
 DOMAIN_LABELS = {
@@ -34,6 +35,14 @@ EVENT_LABELS = {
 RUN_LABELS = {
     "running": "Scan in progress", "completed": "Completed",
     "partial": "Completed with gaps", "failed": "Failed", "cancelled": "Stopped",
+}
+PROGRESS_STAGES = {
+    "queued": "Waiting to start", "discovery": "Finding subdomains",
+    "generation": "Generating typo candidates", "dns": "Checking DNS",
+    "parking": "Checking parking signals", "websites": "Checking website responses",
+    "screenshots": "Capturing websites", "comparison": "Comparing images",
+    "publishing": "Saving results", "completed": "Completed",
+    "partial": "Completed with gaps", "cancelled": "Stopped", "failed": "Failed",
 }
 
 
@@ -209,6 +218,10 @@ def create_app(service):
     def project_runs(project_id):
         return sorted(service.store.list_runs(str(project_id), limit=20, include_events=False),
                       key=lambda run: run.get("started_at", ""), reverse=True)
+
+    def live_data(run_id):
+        data_dir = getattr(service, "data_dir", None)
+        return read_progress(data_dir, str(run_id)), read_tool_output(data_dir, str(run_id))
 
     def selected_filters():
         status = request.args.get("status", "resolved")
@@ -528,13 +541,32 @@ def create_app(service):
         if run is None:
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
+        progress, outputs = live_data(run_id)
         handoff = review_selection(service.store, str(run_id)) if run["status"] in {"completed", "partial"} else None
         return render_template("run.html", project=project, run=run, page="run",
+                               progress=progress, outputs=outputs, progress_stages=PROGRESS_STAGES,
                                demo="demo" in run.get("source_status", {}), handoff=handoff,
                                handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
                                                "unchanged": "Unchanged images", "uncertain": "Uncertain comparisons",
                                                "duplicate": "Duplicate protocol pairs", "parked": "Likely parked",
                                                "reviewed": "Already reviewed"})
+
+    @app.get("/runs/<uuid:run_id>/progress")
+    def run_progress(run_id):
+        try:
+            run = service.store.get_run(str(run_id))
+        except KeyError:
+            run = None
+        if run is None:
+            return {"error": "This scan could not be found."}, 404
+        try:
+            project = service.store.get_project(str(UUID(run.get("project_id", ""))))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            project = None
+        if project is None:
+            return {"error": "This scan could not be found."}, 404
+        progress, outputs = live_data(run_id)
+        return {"run_id": str(run_id), "status": run["status"], "progress": progress, "outputs": outputs}
 
     @app.get("/projects/<uuid:project_id>/export.csv")
     def export_project(project_id):

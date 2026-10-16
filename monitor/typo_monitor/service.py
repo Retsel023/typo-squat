@@ -12,6 +12,7 @@ import time
 
 from .adapters import AilGenerator, DnsResolver, Subfinder
 from .domains import parse_domains
+from .progress import RunProgress
 from .store import Store
 
 LOG = logging.getLogger(__name__)
@@ -109,6 +110,7 @@ class MonitorService:
         self._mutex = threading.Lock()
         self._futures = {}
         self._cancel_events = {}
+        self._progress = {}
         self._execution = threading.local()
         self._closed = threading.Event()
         for adapter in (self.resolver, self.generator, self.discoverer):
@@ -182,6 +184,17 @@ class MonitorService:
                     datetime.fromisoformat(schedule["next_run_at"].replace("Z", "+00:00"))
                     <= (now or datetime.now(timezone.utc)))
 
+    def _report_progress(self, run_id, stage, message=None, **values):
+        reporter = self._progress.get(run_id)
+        if reporter is None:
+            return
+        try:
+            reporter.update(stage, message, **values)
+        except Exception:
+            # Diagnostics must never turn a valid DNS observation into failure.
+            self._progress.pop(run_id, None)
+            LOG.exception("Could not record live progress for %s", run_id)
+
     def submit_scan(self, project_id, *, _scheduled=False):
         with self._mutex:
             if self._closed.is_set():
@@ -200,6 +213,11 @@ class MonitorService:
             run = self.store.start_run(project_id, dns_workers=self.dns_status(project)["workers"])
             requested = self._cancel_events[run["id"]] = threading.Event()
             try:
+                self._progress[run["id"]] = RunProgress(self.data_dir, run["id"])
+                self._report_progress(run["id"], "queued", "Queued; waiting for the scan worker.")
+            except Exception:
+                LOG.exception("Could not initialize live progress for %s", run["id"])
+            try:
                 self._futures[run["id"]] = self._executor.submit(self._execute, run)
                 if (project.get("schedule_interval_hours") or 0) > 0:
                     self.store.advance_schedule(project_id)
@@ -209,6 +227,8 @@ class MonitorService:
                 if future:
                     future.cancel()
                 self.store.fail_run(run["id"], str(exc))
+                self._report_progress(run["id"], "failed", f"Could not start the scan: {exc}", level="error")
+                self._progress.pop(run["id"], None)
                 raise
             # Retain only outstanding work. History itself is durable in SQLite.
             self._futures = {key: future for key, future in self._futures.items() if not future.done()}
@@ -226,6 +246,7 @@ class MonitorService:
                 event.set()
             result = self.store.cancel_run(run_id)
             if result["status"] == "cancelled":
+                self._report_progress(run_id, "cancelled", "Stopped by user; previously accepted results were kept.")
                 project = self.store.get_project(result["project_id"])
                 if (project.get("schedule_interval_hours") or 0) > 0:
                     self.store.advance_schedule(result["project_id"])
@@ -233,6 +254,7 @@ class MonitorService:
             if future and future.cancel():
                 self._futures.pop(run_id, None)
                 self._cancel_events.pop(run_id, None)
+                self._progress.pop(run_id, None)
             return result
 
     def scan_now(self, project_id):
@@ -252,6 +274,9 @@ class MonitorService:
         source_status = {}
         requested = self._cancel_events[run_id]
         self._execution.cancel = requested
+        def report(stage, message=None, **values):
+            self._report_progress(run_id, stage, message, **values)
+
         signal = _CancellationSignal(self._closed, requested)
         workers = run.get("dns_workers") or self.dns_workers
         self.resolver.workers = workers
@@ -263,11 +288,14 @@ class MonitorService:
             if adapter is not None:
                 adapter.cancel_event = signal
                 adapter.run_id = run_id
+                adapter.progress_callback = report
         try:
             self._check_shutdown()
             workdir.mkdir(parents=True)
             project = self.store.get_project(project_id)
             old = self.store.inventory(project_id)
+            report("discovery", f"Discovering subdomains for {len(project['roots'])} root domains.",
+                   current=0, total=len(project["roots"]))
             LOG.info("Run %s: discovery starting for %d roots", run_id, len(project["roots"]))
             if self.discovery:
                 discovered, source_status["discovery"] = self.discoverer.discover(project["roots"], workdir)
@@ -283,6 +311,8 @@ class MonitorService:
             signature = signature_method() if callable(signature_method) else None
             cached = self.store.generation_cache(project_id, signature) if callable(signature_method) else set()
             pending = [seed for seed in seeds if seed not in cached]
+            report("generation", f"Generating {len(pending)} seeds; reusing {len(seeds) - len(pending)} cached seeds.",
+                   current=0, total=len(pending), metrics={"reused_seeds": len(seeds) - len(pending)})
             LOG.info("Run %s: generation starting for %d seeds; reusing %d", run_id, len(pending), len(seeds) - len(pending))
             generated, provenance, generation = [], {}, None
             if pending:
@@ -306,6 +336,8 @@ class MonitorService:
                 raise RuntimeError(f"{len(candidates):,} candidates exceed the configured {self.max_candidates:,} limit. Increase --max-candidates; inventory was not truncated.")
             (workdir / "candidates.txt").write_text("\n".join(candidates) + "\n", encoding="utf-8")
             LOG.info("Run %s: DNS checks starting for %d candidates with %d workers", run_id, len(candidates), workers)
+            report("dns", f"Checking {len(candidates):,} domains with {workers} DNS workers.",
+                   current=0, total=len(candidates), metrics={"resolved": 0, "negative": 0, "uncertain": 0})
             observations = self.resolver.resolve(candidates)
             self._check_shutdown()
             if set(observations) != set(candidates):
@@ -313,6 +345,7 @@ class MonitorService:
             source_status["dns"] = {"status": "partial" if any(o["status"] == "unknown" for o in observations.values()) else "ok", "detail": "A, AAAA and CNAME; recursive DNS observations, not registration checks.", "nameservers": getattr(self.resolver, "nameservers", None) or "system", "workers": getattr(self.resolver, "workers", None)}
             if self.parking_classifier:
                 LOG.info("Run %s: parking checks starting", run_id)
+                report("parking", "Checking resolving domains for known DNS parking signals.")
                 self.parking_classifier.nameservers = getattr(self.resolver, "nameservers", None)
                 observations = self.parking_classifier.enrich(observations)
                 self._check_shutdown()
@@ -326,11 +359,13 @@ class MonitorService:
             if self.capturer:
                 resolving = sorted(domain for domain, observation in observations.items() if observation["status"] == "resolved")
                 LOG.info("Run %s: website checks starting for %d resolving domains; screenshots only for responding HTTP/HTTPS endpoints", run_id, len(resolving))
+                report("websites", "Checking HTTP and HTTPS before browser capture.", current=0, total=len(resolving) * 2)
                 try:
                     screenshots, source_status["screenshots"] = self.capturer.capture(resolving, workdir)
                 except Exception as exc:
                     self._check_shutdown()
                     LOG.exception("Screenshot stage failed for %s; retaining DNS observations", run_id)
+                    report("screenshots", f"Screenshot stage failed: {type(exc).__name__}: {exc}", level="error")
                     source_status["screenshots"] = {"status": "failed", "detail": f"{type(exc).__name__}: {exc}"}
                     now = datetime.now(timezone.utc).isoformat()
                     screenshots = {domain: [{"scheme": scheme, "url": f"{scheme}://{domain}",
@@ -340,34 +375,42 @@ class MonitorService:
                 self._check_shutdown()
                 from .visuals import annotate_captures
                 LOG.info("Run %s: local image comparison starting", run_id)
+                report("comparison", "Comparing saved images with previous captures.")
                 screenshots = annotate_captures(screenshots, workdir=workdir, data_dir=self.data_dir,
                     previous=lambda domain, scheme: self.store.latest_successful_capture(project_id, domain, scheme),
-                    cancel_event=signal)
+                    cancel_event=signal, progress_callback=report)
                 source_status["visual_comparison"] = {"status": "ok", "detail": "Decoded pixel changes and HTTP/HTTPS similarity; local comparison, no AI requests.",
                     "changed": sum(row.get("visual", {}).get("change") == "changed" for rows in screenshots.values() for row in rows),
                     "duplicates": sum(bool(row.get("visual", {}).get("duplicate_of")) for rows in screenshots.values() for row in rows)}
                 (workdir / "captures.json").write_text(json.dumps(screenshots, indent=2), encoding="utf-8")
             else:
                 source_status["screenshots"] = {"status": "skipped", "detail": "Capture explicitly disabled or supplied test resolver has no capture adapter."}
+            report("publishing", "Saving accepted observations, screenshots and change history.")
             with self._mutex:
                 self._check_shutdown()
                 result = self.store.finish_run(run_id, seeds=seeds, candidates=candidates,
                                                observations=observations, source_status=source_status, provenance=provenance,
                                                screenshots=screenshots, generation=generation)
             LOG.info("Run %s %s: %d candidates", run_id, result["status"], len(candidates))
+            report(result["status"], "Scan finished; accepted results are available.", metrics=result.get("counts", {}))
             return result
         except Exception as exc:
             with self._mutex:
                 current = self.store.get_run(run_id)
                 if current["status"] != "running":
                     LOG.info("Run %s: %s; unaccepted partial work was not published", run_id, current["status"])
+                    report(current["status"], "Scan stopped; unaccepted partial work was not published.")
                     return current
                 if requested.is_set():
-                    return self.store.cancel_run(run_id)
+                    result = self.store.cancel_run(run_id)
+                    report("cancelled", "Stopped by user; previously accepted results were kept.")
+                    return result
                 LOG.exception("Run %s failed", run_id)
+                report("failed", f"{type(exc).__name__}: {exc}", level="error")
                 return self.store.fail_run(run_id, f"{type(exc).__name__}: {exc}")
         finally:
             self._cancel_events.pop(run_id, None)
+            self._progress.pop(run_id, None)
             self._execution.cancel = None
             if workdir.exists():
                 try:
@@ -410,6 +453,8 @@ class MonitorService:
                 if future.cancel():
                     if self.store.get_run(run_id)["status"] == "running":
                         self.store.fail_run(run_id, "Server stopped before this queued scan began.")
+                        self._report_progress(run_id, "failed", "Server stopped before this queued scan began.", level="error")
+                    self._progress.pop(run_id, None)
         self._executor.shutdown(wait=True)
         self._instance.close()
 

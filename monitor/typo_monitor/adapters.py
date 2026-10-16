@@ -21,23 +21,46 @@ from .concurrency import bounded_map
 LOG = logging.getLogger(__name__)
 
 
-def _run_command(args, *, cancel_event=None, timeout, **kwargs):
-    if cancel_event is None:
+def _report_progress(callback, stage, message=None, *, current=None, total=None, metrics=None, level="info"):
+    """Telemetry is optional and cannot invalidate accepted adapter results."""
+    if callable(callback):
+        try:
+            callback(stage, message, current=current, total=total,
+                     metrics=dict(metrics) if metrics is not None else None, level=level)
+        except Exception:
+            LOG.debug("Progress callback failed for stage %s", stage, exc_info=True)
+
+
+def _run_command(args, *, cancel_event=None, timeout, on_tick=None, **kwargs):
+    if cancel_event is None and on_tick is None:
         return subprocess.run(args, timeout=timeout, check=False, **kwargs)
     deadline = time.monotonic() + timeout
+    next_tick = time.monotonic() + 1
     groups = os.name == "posix"
     completed = False
+
+    def tick():
+        if callable(on_tick):
+            try:
+                on_tick()
+            except Exception:
+                LOG.debug("Command progress tick failed", exc_info=True)
+
     with subprocess.Popen(args, start_new_session=groups, **kwargs) as process:
         try:
             while True:
-                if cancel_event.is_set():
+                if cancel_event is not None and cancel_event.is_set():
                     raise RuntimeError("Scan cancelled or worker shutdown requested; accepted observations were preserved.")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(args, timeout)
+                if on_tick is not None and time.monotonic() >= next_tick:
+                    tick()
+                    next_tick = time.monotonic() + 1
                 try:
                     result = process.wait(timeout=min(0.25, remaining))
                     completed = result == 0
+                    tick()
                     return subprocess.CompletedProcess(args, result)
                 except subprocess.TimeoutExpired:
                     continue
@@ -236,7 +259,10 @@ class DnsResolver:
 
     def resolve(self, candidates):
         result = {}
+        counts = {"resolved": 0, "negative": 0, "uncertain": 0}
         last_report = time.monotonic()
+        callback = getattr(self, "progress_callback", None)
+        _report_progress(callback, "dns", current=0, total=len(candidates), metrics=counts)
 
         def check_cancel():
             if getattr(self, "cancel_event", None) is not None and self.cancel_event.is_set():
@@ -246,12 +272,13 @@ class DnsResolver:
                                  check_cancel=check_cancel, thread_name_prefix="dns")) as completed:
             for domain, observation in completed:
                 result[domain] = observation
+                status = observation["status"]
+                counts["resolved" if status == "resolved" else "negative" if status in {"nxdomain", "noanswer"} else "uncertain"] += 1
+                _report_progress(callback, "dns", current=len(result), total=len(candidates), metrics=counts)
                 if time.monotonic() - last_report >= 5 or len(result) == len(candidates):
-                    statuses = [row["status"] for row in result.values()]
                     LOG.info("Run %s: DNS %d/%d checked; %d resolved, %d negative, %d uncertain",
                              getattr(self, "run_id", "manual"), len(result), len(candidates),
-                             statuses.count("resolved"), statuses.count("nxdomain") + statuses.count("noanswer"),
-                             statuses.count("unknown"))
+                             counts["resolved"], counts["negative"], counts["uncertain"])
                     last_report = time.monotonic()
         check_cancel()
         return result

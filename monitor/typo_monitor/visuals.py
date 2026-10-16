@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable
 
 from PIL import Image, ImageChops, ImageOps, ImageStat
+from .adapters import _report_progress
 
 
 NEAR_DHASH_THRESHOLD = 3
@@ -122,7 +123,8 @@ def _empty_visual() -> dict:
 
 
 def annotate_captures(captures: dict, *, workdir: Path,
-                      previous: Callable[[str, str], dict | None], data_dir: Path, cancel_event=None) -> dict:
+                      previous: Callable[[str, str], dict | None], data_dir: Path, cancel_event=None,
+                      progress_callback=None) -> dict:
     """Add visual metadata in place, retaining every capture and its raw image.
 
     ``previous(domain, scheme)`` supplies the last successful capture metadata.
@@ -130,6 +132,10 @@ def annotate_captures(captures: dict, *, workdir: Path,
     changes describe pixels, not page ownership, intent, or security findings.
     """
     cache = {}
+    total = sum(len(attempts) for attempts in captures.values())
+    processed, domains_processed = 0, 0
+    _report_progress(progress_callback, "comparison", current=0, total=total,
+                     metrics={"domains_processed": 0, "domains_total": len(captures)})
 
     def check_cancel():
         if cancel_event is not None and cancel_event.is_set():
@@ -181,4 +187,8 @@ def annotate_captures(captures: dict, *, workdir: Path,
                 http_attempt["visual"].update(duplicate_of="https", duplicate_kind="exact")
             elif _near_duplicate(http_image, https_image):
                 http_attempt["visual"].update(duplicate_of="https", duplicate_kind="similar")
+        processed += len(attempts)
+        domains_processed += 1
+        _report_progress(progress_callback, "comparison", current=processed, total=total,
+                         metrics={"domains_processed": domains_processed, "domains_total": len(captures)})
     return captures
