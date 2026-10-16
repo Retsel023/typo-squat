@@ -6,37 +6,58 @@ from pathlib import Path
 import hashlib
 import ipaddress
 import json
+import logging
+import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
 
 from .domains import normalize_domain, parse_domains
 
+LOG = logging.getLogger(__name__)
+
 
 def _run_command(args, *, cancel_event=None, timeout, **kwargs):
     if cancel_event is None:
         return subprocess.run(args, timeout=timeout, check=False, **kwargs)
     deadline = time.monotonic() + timeout
-    with subprocess.Popen(args, **kwargs) as process:
+    groups = os.name == "posix"
+    completed = False
+    with subprocess.Popen(args, start_new_session=groups, **kwargs) as process:
         try:
             while True:
                 if cancel_event.is_set():
-                    raise RuntimeError("Scan canceled during shutdown; accepted observations were preserved.")
+                    raise RuntimeError("Scan cancelled or worker shutdown requested; accepted observations were preserved.")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(args, timeout)
                 try:
-                    return subprocess.CompletedProcess(args, process.wait(timeout=min(0.25, remaining)))
+                    result = process.wait(timeout=min(0.25, remaining))
+                    completed = result == 0
+                    return subprocess.CompletedProcess(args, result)
                 except subprocess.TimeoutExpired:
                     continue
         finally:
-            if process.poll() is None:
-                process.terminate()
+            if not completed:
+                def stop(sig):
+                    try:
+                        if groups:
+                            os.killpg(process.pid, sig)
+                        elif process.poll() is None:
+                            process.terminate() if sig == signal.SIGTERM else process.kill()
+                    except ProcessLookupError:
+                        pass
+                stop(signal.SIGTERM)
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    pass
+                finally:
+                    stop(signal.SIGKILL if groups else signal.SIGTERM)
+                    if process.poll() is None:
+                        process.kill()
                     process.wait()
 
 
@@ -213,10 +234,18 @@ class DnsResolver:
         # executor.map bounds in-flight submissions on supported Python 3.10+ by
         # processing chunks; all candidates must receive an explicit observation.
         result = {}
+        last_report = time.monotonic()
         with ThreadPoolExecutor(max_workers=self.workers) as executor:
             for offset in range(0, len(candidates), self.workers * 4):
                 if getattr(self, "cancel_event", None) is not None and self.cancel_event.is_set():
                     raise RuntimeError("DNS scan canceled during shutdown; accepted observations were preserved.")
                 chunk = candidates[offset:offset + self.workers * 4]
                 result.update(zip(chunk, executor.map(self.observe, chunk)))
+                if time.monotonic() - last_report >= 5 or len(result) == len(candidates):
+                    statuses = [observation["status"] for observation in result.values()]
+                    LOG.info("Run %s: DNS %d/%d checked; %d resolved, %d negative, %d uncertain",
+                             getattr(self, "run_id", "manual"), len(result), len(candidates),
+                             statuses.count("resolved"), statuses.count("nxdomain") + statuses.count("noanswer"),
+                             statuses.count("unknown"))
+                    last_report = time.monotonic()
         return result

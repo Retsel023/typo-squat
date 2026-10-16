@@ -4,6 +4,13 @@ Import [`workflows/n8n-visual-review.json`](../workflows/n8n-visual-review.json)
 
 n8n Cloud coordinates the work; the Python scanner and Linux tools run on your own Linux server, natively or in Docker. Docker packages the scanner; n8n schedules and connects services. The [Execute Command node is unavailable on n8n Cloud](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.executecommand/), so the workflow uses HTTP. The [standalone scanner and local review interface](../standalone/README.md) can be used without n8n.
 
+You can also schedule clients directly in the scanner UI. Per-client intervals
+and next due times persist on the Linux scanner, and require its server to remain
+running. Choose one scheduling approach deliberately; enabling both a native
+client schedule and an n8n trigger can create separate scan attempts. Stopping a
+scanner run preserves its previous accepted results and leaves its future
+schedule unchanged; disable that schedule separately when needed.
+
 ## Connect the scanner
 
 1. Run the scanner on your Linux server. Set a private `TYPO_MONITOR_API_TOKEN` in its environment. Keep its application listener local and expose the authenticated `/api/` routes through an HTTPS reverse proxy reachable from n8n Cloud. Your machine's `127.0.0.1`, Docker service names, and private screenshot URLs are not reachable from n8n Cloud.
@@ -12,7 +19,7 @@ n8n Cloud coordinates the work; the Python scanner and Linux tools run on your o
 4. Leave `ai_enabled=false` for the first manual test. The workflow starts/resumes the scanner and retrieves metadata only; it reports `ai_disabled`, zero AI requests, and zero saved assessments. It does not fetch image bytes into n8n.
 5. To resume an existing job or review another page, set `existing_run_id` to its UUID. This skips job creation. **Start scan** has no automatic POST retry, avoiding duplicate jobs after an uncertain response.
 
-The [HTTP Request node](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/) uses a 30-second scanner-request timeout. Reads have bounded retries. Polling defaults to every 30 seconds with a 1,800-second deadline. Failed scans and expired deadlines stop explicitly; ending an n8n execution does not cancel the independent scanner job. Keep these settings and the [workflow timeout](https://docs.n8n.io/build/manage-workflows/configure-workflow-settings/) within your Cloud plan's limit, then resume long jobs by run UUID.
+The [HTTP Request node](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.httprequest/) uses a 30-second scanner-request timeout. Reads have bounded retries. Polling defaults to every 30 seconds with a 1,800-second deadline. Failed or cancelled scans and expired deadlines stop explicitly; ending an n8n execution does not cancel the independent scanner job. Keep these settings and the [workflow timeout](https://docs.n8n.io/build/manage-workflows/configure-workflow-settings/) within your Cloud plan's limit, then resume long jobs by run UUID. If you stop a scan in the scanner UI, the next status poll detects `cancelled` and ends with a stopped message. It does not enter image fetching or AI review for that cancelled run.
 
 ## Enable gpt-4o-mini review
 
@@ -43,7 +50,7 @@ A loop bounds simultaneous work; n8n may still hold previous node outputs for an
 | Request | Result |
 | --- | --- |
 | `POST /api/scans` with `{"project_id":"UUID"}` | A run object containing `id`, `project_id`, and `status`. |
-| `GET /api/runs/UUID` | Run status: `running`, `completed`, `partial`, or `failed`. Completed and partial runs can provide captured evidence. |
+| `GET /api/runs/UUID` | Run status: `running`, `completed`, `partial`, `failed`, or `cancelled`. Completed and partial runs can provide captured evidence. |
 | `GET /api/runs/UUID/review?limit=5&offset=0&include_reviewed=1` | Metadata-only `run_id`, `items`, and `next_offset`. Review admits only `new`/`changed` pairs with a captured current image. |
 | `GET /api/runs/UUID/review?include_images=1&domain=example.com&scheme=https&limit=1&offset=0&include_reviewed=1` | One pair with current and optional previous `image_data_url`, plus available owned references. Domain and scheme are required for inline images. |
 | `POST /api/runs/UUID/reviews` | Saves `{domain, scheme, provider, model, summary, risk, changed, confidence}` as a labelled AI assessment. The workflow sets provider `OpenAI` and model `gpt-4o-mini`. |

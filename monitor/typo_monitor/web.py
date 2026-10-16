@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import os
 import secrets
 from datetime import datetime
@@ -32,7 +33,7 @@ EVENT_LABELS = {
 }
 RUN_LABELS = {
     "running": "Scan in progress", "completed": "Completed",
-    "partial": "Completed with gaps", "failed": "Failed",
+    "partial": "Completed with gaps", "failed": "Failed", "cancelled": "Stopped",
 }
 
 
@@ -260,6 +261,12 @@ def create_app(service):
         filter_params = filter_parameters(filters, view)
         runs = project_runs(project_id)
         last_run = project.get("last_run") or (runs[0] if runs else None)
+        if hasattr(service, "schedule_status"):
+            schedule = service.schedule_status(project)
+        else:
+            inherited = project.get("schedule_interval_hours") is None
+            schedule = {"interval_hours": getattr(service, "interval_hours", 0) if inherited else project["schedule_interval_hours"],
+                        "next_run_at": project.get("schedule_next_run_at"), "inherited": inherited}
         return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
                                counts=counts, query=query, status_filter=status,
                                runs=runs, last_run=last_run, page="project",
@@ -270,7 +277,7 @@ def create_app(service):
                                seed_filter=seed, source_sections=source_sections,
                                source_group_count=len(groups), source_total=source_total,
                                default_count=default_count, hidden_count=counts["total"] - default_count,
-                               filter_params=filter_params, view=view,
+                               filter_params=filter_params, view=view, schedule=schedule,
                                gallery_params={**filter_params, "view": "gallery"},
                                table_params={**filter_params, "view": "table"},
                                has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved"))
@@ -395,6 +402,44 @@ def create_app(service):
             abort(400, description=str(error))
         return redirect(url_for("run_detail", run_id=run["id"]), code=303)
 
+    @app.post("/projects/<uuid:project_id>/schedule")
+    def update_schedule(project_id):
+        project = project_or_404(project_id)
+        if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
+            abort(409, description="Simulated demo projects cannot be scheduled. Create a separate project for real scans.")
+        try:
+            hours = 0.0 if request.form.get("action") == "off" else float(request.form.get("interval_hours", ""))
+            if not math.isfinite(hours) or not (hours == 0 or 1 <= hours <= 8760):
+                raise ValueError
+        except (ValueError, OverflowError):
+            abort(400, description="Choose 0 to turn scheduling off, or an interval between 1 and 8760 hours.")
+        try:
+            service.store.set_schedule(str(project_id), hours)
+        except ValueError as error:
+            abort(400, description=str(error))
+        flash("Automatic scans are off for this project." if hours == 0 else "Scan schedule saved for this project.", "success")
+        return redirect(url_for("project_detail", project_id=project_id, _anchor="schedule"), code=303)
+
+    @app.post("/runs/<uuid:run_id>/cancel")
+    def cancel_scan(run_id):
+        if service.store.get_run(str(run_id)) is None:
+            abort(404, description="This scan could not be found.")
+        try:
+            run = service.cancel_scan(str(run_id))
+        except KeyError:
+            abort(404, description="This scan could not be found.")
+        except RuntimeError as error:
+            abort(409, description=str(error))
+        except ValueError as error:
+            abort(400, description=str(error))
+        if run["status"] == "running":
+            flash("Stop requested. The scan is shutting down; previously accepted findings are preserved.", "info")
+        elif run["status"] == "cancelled":
+            flash("Scan stopped. Previous results were kept.", "info")
+        else:
+            flash("This scan has already finished.", "info")
+        return redirect(url_for("run_detail", run_id=run_id), code=303)
+
     @app.get("/runs/<uuid:run_id>")
     def run_detail(run_id):
         try:
@@ -437,7 +482,7 @@ def create_app(service):
 
     for error_code in (400, 404, 409, 413):
         def handle_error(error):
-            messages = {400: "Check your request", 404: "Page not found", 409: "Scan already in progress", 413: "The form is too large"}
+            messages = {400: "Check your request", 404: "Page not found", 409: "Action unavailable", 413: "The form is too large"}
             return render_template("error.html", title=messages[error.code],
                                    message=error.description, code=error.code, page="error"), error.code
         app.register_error_handler(error_code, handle_error)

@@ -90,7 +90,7 @@ def main(argv=None):
                             resolver=DnsResolver(args.resolver, args.dns_timeout, args.workers),
                             max_candidates=args.max_candidates,
                             capture=not args.no_screenshots, capturer=capturer,
-                            interval_hours=getattr(args, "interval_hours", 0)) as service:
+                            interval_hours=getattr(args, "interval_hours", 0), scheduling=args.command == "serve") as service:
             if args.command == "doctor":
                 print(json.dumps(service.tool_status(), indent=2))
             elif args.command == "projects":

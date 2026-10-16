@@ -18,7 +18,11 @@ docker compose logs -f monitor
 Open <http://127.0.0.1:5000>. Create a project, enter one root domain per line, and
 start its first scan. Scanning runs in a background worker; page requests return
 immediately. Projects wait in a single worker queue to bound resource usage.
-Only one run per project can be accepted at once.
+Only one run per project can be accepted at once. Use **Stop scan** to cancel a
+running or queued scan. Stopping is cooperative: the run becomes `cancelled`
+immediately and its adapters stop as they reach cancellation checks. The last
+accepted inventory, DNS baseline, generation cache and screenshots remain intact;
+unfinished work from the stopped run is not published.
 
 The image uses slim Python, versioned Subfinder and Gowitness binaries, Chromium,
 locked Python dependencies, and an unprivileged user. It does not run Kali upgrades, the old
@@ -35,6 +39,31 @@ authenticated HTTPS reverse proxy. The application has CSRF protection and
 escaped output but does **not** provide GUI user accounts. The optional automation
 API has separate Bearer-token authentication; expose only `/api/` for n8n Cloud
 and keep the GUI behind your own access controls.
+
+## Follow scan progress
+
+```sh
+docker compose logs -f --tail=100 monitor
+```
+
+The application logs each run UUID and its discovery, generation/cache reuse,
+DNS, parking, screenshot and image-comparison stages. DNS progress includes
+checked/resolved/negative/uncertain counts. Native runs print the same messages
+to their terminal. These messages describe actual stages and counts rather than
+an estimated completion time; the run page refreshes status while work runs.
+
+Detailed tool logs remain in `/data/runs/RUN_UUID/`, including `generator.log`
+when generation was needed, `gowitness.log` when captures were attempted, and
+per-root Subfinder stderr files. For example, after screenshot capture starts:
+
+```sh
+docker compose exec monitor tail -n 50 /data/runs/RUN_UUID/gowitness.log
+```
+
+After updating application source, use `docker compose up --build -d` to rebuild
+and recreate the image while retaining its named volume. The separate
+[standalone profile](../standalone/README.md) documents using host port 5057 next
+to an existing native listener on 5055, and explains their separate data stores.
 
 ## Run in a virtual environment
 
@@ -91,7 +120,8 @@ Native Windows compatibility has not been tested; Linux is the target.
   resolver settings are rejected after the baseline: keep the same explicit
   resolvers or create a new project to establish a separate baseline.
 * Failed stages do not publish a baseline or replace accepted observations.
-  Interrupted jobs are marked failed on restart. Graceful shutdown cancels
+  Interrupted jobs are marked failed on restart. User-stopped jobs are marked
+  cancelled and cannot replace accepted observations. Graceful shutdown cancels
   queued work and interrupts adapters before accepting observations.
 
 Recursive DNS is an observation of one resolver view at one time. Geo DNS,
@@ -111,12 +141,25 @@ python -m typo_monitor --data-dir ./data projects
 python -m typo_monitor --data-dir ./data scan --project PROJECT_UUID
 ```
 
-The interval uses persisted last attempt times, including failed/partial runs,
-to avoid retry storms. New projects wait one interval or can be scanned manually.
-Only the server process runs the schedule. An advisory lock prevents another
-process from recovering live jobs; use the GUI for scans while the server is up.
-Standalone CLI scans can use systemd timers/cron while the server is stopped, or
-with a separate data directory.
+Each client's project page has its own scheduling control. Set a positive
+interval to repeat that client's scans, or choose manual/off to disable its schedule.
+New clients inherit the server's `--interval-hours` default until a client interval
+is saved. An explicit manual/off setting also overrides a positive server default. Per-client intervals and next due times
+persist in SQLite; they survive a restart. A manual scan advances that client's
+next due time so it is not immediately followed by a scheduled duplicate.
+
+The server must remain running for schedules to execute. The scheduler checks
+for due clients periodically, skips clients that are already queued/running and
+skips simulated demo projects. Stopping a scan does not disable its future
+schedule; its next attempt moves one interval after the stop time to prevent an
+immediate overdue restart. Turn scheduling off separately if needed. The global fallback uses
+persisted last-attempt times, including failed, partial and cancelled attempts,
+to avoid immediate retry storms. New clients can be scanned manually or wait
+until due.
+
+An advisory lock prevents another process from recovering live jobs; use the
+GUI for scans while the server is up. Standalone CLI scans can use systemd
+timers/cron while the server is stopped, or with a separate data directory.
 
 For Docker configuration, add a Compose override:
 

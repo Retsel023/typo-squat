@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 import json
+import math
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import sqlite3
 from urllib.parse import urlsplit
@@ -46,7 +47,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL,
                     roots_json TEXT NOT NULL, created_at TEXT NOT NULL,
-                    baseline_run_id TEXT, comparison_scope_json TEXT
+                    baseline_run_id TEXT, comparison_scope_json TEXT,
+                    schedule_interval_hours REAL DEFAULT NULL,
+                    schedule_next_run_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
@@ -121,6 +124,12 @@ class Store:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(projects)")}
             if "comparison_scope_json" not in columns:
                 db.execute("ALTER TABLE projects ADD COLUMN comparison_scope_json TEXT")
+            if "schedule_interval_hours" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN schedule_interval_hours REAL DEFAULT NULL")
+            if "schedule_next_run_at" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN schedule_next_run_at TEXT")
+            db.execute("""CREATE INDEX IF NOT EXISTS project_schedule_due ON projects(schedule_next_run_at)
+                WHERE schedule_interval_hours>0""")
             capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
             for column in ("visual_json", "analysis_json"):
                 if column not in capture_columns:
@@ -338,6 +347,61 @@ class Store:
         with self._connection() as db:
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
+    @staticmethod
+    def _schedule_now(now=None):
+        try:
+            value = _now() if now is None else now
+            moment = datetime.fromisoformat(value) if isinstance(value, str) else value
+            if not isinstance(moment, datetime) or moment.tzinfo is None or moment.utcoffset() is None:
+                raise ValueError
+            return moment.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Schedule time must be an aware ISO date or datetime.") from exc
+
+    def set_schedule(self, project_id, interval_hours):
+        """Persist an independent cadence: 0 disables, otherwise 1–8760 hours."""
+        if (not isinstance(interval_hours, (int, float)) or isinstance(interval_hours, bool)
+                or (interval_hours != 0 and not 1 <= interval_hours <= 8760)
+                or not math.isfinite(interval_hours)):
+            raise ValueError("Schedule interval must be 0 (off) or between 1 and 8760 hours.")
+        interval = float(interval_hours)
+        next_at = ((self._schedule_now() + timedelta(hours=interval)).isoformat(timespec="microseconds")
+                   if interval else None)
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            db.execute("UPDATE projects SET schedule_interval_hours=?,schedule_next_run_at=? WHERE id=?",
+                       (interval, next_at, project_id))
+            return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+    def due_projects(self, now=None):
+        """Return due projects; queue acceptance must precede advance_schedule."""
+        deadline = self._schedule_now(now).isoformat(timespec="microseconds")
+        with self._connection() as db:
+            db.execute("BEGIN")
+            rows = db.execute("""SELECT p.* FROM projects p WHERE p.schedule_interval_hours>0
+                AND p.schedule_next_run_at IS NOT NULL AND p.schedule_next_run_at<=?
+                AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.project_id=p.id AND r.status='running')
+                ORDER BY p.schedule_next_run_at,p.id""", (deadline,)).fetchall()
+            projects = [self._project(db, row) for row in rows]
+            return [project for project in projects
+                    if "demo" not in (project.get("last_run") or {}).get("source_status", {})]
+
+    def advance_schedule(self, project_id, now=None):
+        """Advance after successful queue submission, without altering scan state.
+
+        The worker serializes submission and this call. An unadvanced deadline
+        remains due after restart, so interrupted queue submission can retry.
+        """
+        with self._connection(write=True) as db:
+            project = self._require_project(db, project_id)
+            interval = project["schedule_interval_hours"]
+            if not interval:
+                return self._project(db, project)
+            moment = self._schedule_now(now)
+            next_at = (moment + timedelta(hours=interval)).isoformat(timespec="microseconds")
+            db.execute("UPDATE projects SET schedule_next_run_at=? WHERE id=?", (next_at, project_id))
+            return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
     def bind_comparison_scope(self, project_id, scope):
         """Pin the resolver view once this project has an informative baseline."""
         if not isinstance(scope, dict):
@@ -484,7 +548,7 @@ class Store:
                 "SELECT status FROM runs WHERE project_id=? AND id<>? ORDER BY started_at DESC, rowid DESC LIMIT 1",
                 (project_id, run_id),
             ).fetchone()
-            interrupted_sequence = preceding is not None and preceding["status"] == "failed"
+            interrupted_sequence = preceding is not None and preceding["status"] in {"failed", "cancelled"}
             events = []
             finished_at = _now()
             for domain, observation in sorted(normalized.items()):
@@ -575,6 +639,17 @@ class Store:
         with self._connection(write=True) as db:
             self._require_running(db, run_id)
             db.execute("UPDATE runs SET status='failed',finished_at=?,error=? WHERE id=?", (_now(), str(error), run_id))
+            return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+
+    def cancel_run(self, run_id, reason="Scan cancelled by user."):
+        """Cancel a running attempt; terminal attempts are returned unchanged."""
+        with self._connection(write=True) as db:
+            run = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+            if run is None:
+                raise KeyError(run_id)
+            if run["status"] != "running":
+                return self._run(run)
+            db.execute("UPDATE runs SET status='cancelled',finished_at=?,error=? WHERE id=?", (_now(), str(reason), run_id))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     def recover_interrupted_runs(self):

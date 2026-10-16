@@ -40,3 +40,9 @@
   <button class="button primary" type="submit"{% if running or demo %} disabled{% endif %}><span aria-hidden="true">{% if running %}◌{% else %}↻{% endif %}</span> {% if demo %}Demo · read only{% elif running %}Scan in progress{% else %}Start scan{% endif %}</button>
 </form>
 {% endmacro %}
+{% macro stop_button(run) %}
+<form method="post" action="{{ url_for('cancel_scan', run_id=run.id) }}" class="inline-form stop-scan-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <button class="button danger" type="submit"><span aria-hidden="true">■</span> Stop scan</button>
+</form>
+{% endmacro %}

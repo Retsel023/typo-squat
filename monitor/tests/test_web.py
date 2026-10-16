@@ -18,6 +18,7 @@ class FakeStore:
         self.runs = {}
         self.domains = {}
         self.captures = {}
+        self.schedules = []
 
     def list_projects(self):
         return [self.get_project(project_id) for project_id in self.projects]
@@ -58,6 +59,13 @@ class FakeStore:
         return {"seeds": sorted(set(self.projects[project_id]["roots"]) | {domain["domain"] for domain in self.get_domains(project_id) if domain["is_seed"]}),
                 "candidates": [domain["domain"] for domain in self.get_domains(project_id)]}
 
+    def set_schedule(self, project_id, interval_hours):
+        self.schedules.append((project_id, interval_hours))
+        project = self.projects[project_id]
+        project["schedule_interval_hours"] = interval_hours
+        project["schedule_next_run_at"] = "2026-10-17T12:00:00+00:00" if interval_hours else None
+        return self.get_project(project_id)
+
     def domain_counts(self, project_id):
         domains = self.get_domains(project_id)
         return {"total": len(domains), **{status: sum(domain.get("status") == status for domain in domains) for status in ["resolved", "pending_missing", "missing", "unknown"]}}
@@ -89,6 +97,8 @@ class FakeService:
         self.store = FakeStore()
         self.submissions = []
         self.busy = False
+        self.cancellations = []
+        self.interval_hours = 0
 
     def create_project(self, name, roots):
         project = {"id": str(uuid4()), "name": name, "roots": roots, "created_at": "2026-10-16T12:00:00+00:00"}
@@ -107,6 +117,13 @@ class FakeService:
 
     def tool_status(self):
         return {"Subfinder": {"available": False, "detail": "Optional passive discovery"}, "DNS resolver": True}
+
+    def cancel_scan(self, run_id):
+        self.cancellations.append(run_id)
+        run = self.store.get_run(run_id)
+        if run["status"] == "running":
+            run.update(status="cancelled", finished_at="2026-10-16T12:01:00+00:00")
+        return run
 
 
 class WebTests(unittest.TestCase):
@@ -722,6 +739,128 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.service.store.list_runs(other["id"]), [])
         run_page = self.client.get(response.headers["Location"])
         self.assertEqual(self.project_links(run_page), {f'/projects/{clazing["id"]}': True, f'/projects/{other["id"]}': False})
+
+    def test_stop_scan_targets_one_run_and_removes_controls_after_stopping(self):
+        clazing, other = self.project("Clazing"), self.project("Other client")
+        run = self.service.submit_scan(clazing["id"])
+        other_run = self.service.submit_scan(other["id"])
+        token = self.token()
+        project_page = self.client.get(f"/projects/{clazing['id']}")
+        run_page = self.client.get(f"/runs/{run['id']}")
+        for page in (project_page, run_page):
+            self.assertIn(f'action="/runs/{run["id"]}/cancel"'.encode(), page.data)
+            self.assertNotIn(f'action="/runs/{other_run["id"]}/cancel"'.encode(), page.data)
+            self.assertIn(b"Stop scan", page.data)
+        response = self.client.post(f"/runs/{run['id']}/cancel", data={"csrf_token": token})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], f"/runs/{run['id']}")
+        self.assertEqual(self.service.cancellations, [run["id"]])
+        self.assertEqual(run["status"], "cancelled")
+        self.assertEqual(other_run["status"], "running")
+        stopped = self.client.get(response.headers["Location"])
+        self.assertIn(b"Stopped", stopped.data)
+        self.assertIn(b"Previous results were kept", stopped.data)
+        self.assertIn(b"Scan stopped before comparison completed", stopped.data)
+        self.assertNotIn(f'action="/runs/{run["id"]}/cancel"'.encode(), stopped.data)
+        self.assertNotIn(b'data-refresh="true"', stopped.data)
+        self.assertEqual(self.project_links(stopped), {f'/projects/{clazing["id"]}': True, f'/projects/{other["id"]}': False})
+
+    def test_cancel_requires_csrf_and_handles_finished_or_missing_runs(self):
+        project = self.project()
+        run = self.service.submit_scan(project["id"])
+        self.assertEqual(self.client.post(f"/runs/{run['id']}/cancel").status_code, 400)
+        self.assertEqual(self.service.cancellations, [])
+        self.assertEqual(run["status"], "running")
+        token = self.token()
+        run["status"] = "completed"  # The worker may finish before a stop request arrives.
+        response = self.client.post(f"/runs/{run['id']}/cancel", data={"csrf_token": token})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(run["status"], "completed")
+        self.assertIn(b"already finished", self.client.get(response.headers["Location"]).data)
+        run["status"] = "cancelled"
+        response = self.client.post(f"/runs/{run['id']}/cancel", data={"csrf_token": token})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(run["status"], "cancelled")
+        self.assertEqual(self.client.post(f"/runs/{uuid4()}/cancel", data={"csrf_token": token}).status_code, 404)
+
+    def test_project_schedule_is_validated_scoped_and_can_be_turned_off(self):
+        clazing, other = self.project("Clazing"), self.project("Other client")
+        page = self.client.get(f"/projects/{clazing['id']}")
+        self.assertIn(b"Scan schedule", page.data)
+        self.assertIn(b'value="0"', page.data)
+        self.assertIn(f'action="/projects/{clazing["id"]}/schedule"'.encode(), page.data)
+        token = self.token()
+        response = self.client.post(f"/projects/{clazing['id']}/schedule", data={"csrf_token": token, "interval_hours": "24"})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], f"/projects/{clazing['id']}#schedule")
+        self.assertEqual(self.service.store.schedules, [(clazing["id"], 24)])
+        self.assertNotIn("schedule_interval_hours", self.service.store.projects[other["id"]])
+        scheduled = self.client.get(response.headers["Location"])
+        self.assertIn(b"Every 24 hours", scheduled.data)
+        self.assertIn(b"Next due 17 Oct 2026", scheduled.data)
+        self.assertIn(b"Turn off", scheduled.data)
+        self.assertIn(b"Schedules run while this server is online", scheduled.data)
+        self.assertIn(b"Stopping a scan leaves this schedule enabled", scheduled.data)
+        response = self.client.post(f"/projects/{clazing['id']}/schedule", data={"csrf_token": token, "action": "off"})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(self.service.store.projects[clazing["id"]]["schedule_interval_hours"], 0)
+        self.assertIsNone(self.service.store.projects[clazing["id"]]["schedule_next_run_at"])
+        self.assertEqual(self.service.submissions, [])  # Editing a schedule never starts an immediate scan.
+
+    def test_schedule_rejects_nonfinite_out_of_range_missing_csrf_and_demo(self):
+        project = self.project()
+        self.assertEqual(self.client.post(f"/projects/{project['id']}/schedule", data={"interval_hours": "24"}).status_code, 400)
+        token = self.token()
+        for value in ("", "nan", "inf", "-inf", "1e309", "-1", "0.5", "8760.1", "garbage"):
+            with self.subTest(value=value):
+                response = self.client.post(f"/projects/{project['id']}/schedule", data={"csrf_token": token, "interval_hours": value})
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.service.store.schedules, [])
+        for value in ("1", "8760", "1.5"):
+            with self.subTest(boundary=value):
+                self.assertEqual(self.client.post(f"/projects/{project['id']}/schedule", data={"csrf_token": token, "interval_hours": value}).status_code, 303)
+        demo = self.service.submit_scan(project["id"])
+        demo.update(status="completed", source_status={"demo": {"status": "ok"}})
+        previous = list(self.service.store.schedules)
+        self.assertEqual(self.client.post(f"/projects/{project['id']}/schedule", data={"csrf_token": token, "interval_hours": "24"}).status_code, 409)
+        self.assertEqual(self.service.store.schedules, previous)
+        self.assertEqual(self.client.post(f"/projects/{uuid4()}/schedule", data={"csrf_token": token, "interval_hours": "24"}).status_code, 404)
+
+    def test_inherited_schedule_is_visible_and_explicit_off_overrides_it(self):
+        project = self.project()
+        self.service.interval_hours = 24
+        page = self.client.get(f"/projects/{project['id']}")
+        self.assertIn(b"Following the server default", page.data)
+        self.assertIn(b"Every 24 hours", page.data)
+        token = self.token()
+        self.client.post(f"/projects/{project['id']}/schedule", data={"csrf_token": token, "action": "off"})
+        page = self.client.get(f"/projects/{project['id']}")
+        self.assertNotIn(b"Following the server default", page.data)
+        self.assertNotIn(b"Every 24 hours", page.data)
+        self.assertIn(b"Start scans manually while this schedule is off", page.data)
+
+    def test_service_schedule_status_supplies_effective_interval_and_next_due(self):
+        project = self.project()
+        self.service.schedule_status = lambda item: {"interval_hours": 168, "next_run_at": "2026-10-23T09:00:00+00:00", "inherited": False}
+        page = self.client.get(f"/projects/{project['id']}")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"Every 168 hours", page.data)
+        self.assertIn(b"Next due 23 Oct 2026", page.data)
+
+    def test_stopping_one_scan_leaves_its_project_schedule_enabled(self):
+        project = self.project()
+        self.service.store.set_schedule(project["id"], 24)
+        run = self.service.submit_scan(project["id"])
+        response = self.client.post(f"/runs/{run['id']}/cancel", data={"csrf_token": self.token()})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(run["status"], "cancelled")
+        self.assertEqual(self.service.store.projects[project["id"]]["schedule_interval_hours"], 24)
+        page = self.client.get(f"/projects/{project['id']}")
+        self.assertIn(b"Every 24 hours", page.data)
+        self.assertIn(b"Turn off", page.data)
+        self.assertIn(b"Stopping a scan leaves this schedule enabled", page.data)
+        self.assertNotIn(f'action="/runs/{run["id"]}/cancel"'.encode(), page.data)
+        self.assertNotIn("Stopping…".encode(), page.data)
 
 
 if __name__ == "__main__":

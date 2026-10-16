@@ -20,25 +20,75 @@ From the repository root:
 
 ```sh
 cd standalone
+export TYPO_STANDALONE_PORT=5057
 docker compose up --build -d
 ```
 
-Open <http://127.0.0.1:5055>. Create a project in the UI using your root domains,
+Open <http://127.0.0.1:5057>. This example uses 5057 so an existing native
+profile can keep using 5055. Create a project in the UI using your root domains,
 one per line, and start scans from its project page. The server offers manual
-scans by default. To inspect startup or stop the server:
+scans by default. Use **Stop scan** to cancel a running or queued client scan;
+previously accepted results stay available and unfinished work is not published.
+To inspect startup or stop the server:
 
 ```sh
 docker compose logs --tail=100 monitor
 docker compose stop monitor
 ```
 
-To use another host port, set `TYPO_STANDALONE_PORT` before starting Compose, for
-example `TYPO_STANDALONE_PORT=5056 docker compose up -d`. The container continues
-to serve port 5000; its healthcheck uses that internal port.
+The Compose default remains 5055; `TYPO_STANDALONE_PORT` changes only the host
+port. Keep the variable exported for later Compose startup/rebuild commands. The
+container still serves port 5000, and its healthcheck uses that internal port.
+After pulling code updates, rebuild the image to run the new application:
+
+```sh
+TYPO_STANDALONE_PORT=5057 docker compose up --build -d
+docker compose logs -f --tail=100 monitor
+```
+
+The native Python launcher stores clients and history in `standalone/data/`.
+Docker uses its named volume mounted at `/data`, so native clients do not
+automatically appear in the Docker profile. Changing ports does not copy or
+switch either data store. You can inspect native 5055 and Docker 5057 separately;
+an empty Docker dashboard does not mean the native data was lost.
 
 `docker compose down` retains the named data volume. `docker compose down -v`
 deletes that profile's saved data. The main `monitor/` Compose profile uses a
 separate volume.
+
+Each client's project page can save its own scan interval or select manual/off.
+New clients follow the server default until their own schedule is saved. Explicit
+manual/off overrides a server-wide interval.
+These settings and the client's next due time persist in the named volume. Keep
+the server container running for schedules to execute. A manual scan advances
+the next due time; **Stop scan** stops the current attempt but leaves the future
+schedule enabled. Stopping restarts its interval from the cancellation time,
+preventing an overdue scan from immediately restarting. Disable the schedule
+separately when desired. Simulated demo projects are never automatically scanned.
+
+## Follow an actual scan
+
+```sh
+docker compose logs -f --tail=100 monitor
+```
+
+Logs include the run UUID and transitions through discovery, generation/reuse,
+DNS, parking, screenshots and image comparison. DNS progress reports checked,
+resolved, negative and uncertain counts. These are stage/count updates, not an
+estimated completion time. The run page refreshes its status while work runs;
+accepted findings appear after the run completes.
+
+Tool-specific output is stored under `/data/runs/RUN_UUID/`. Once screenshot
+capture has started, inspect its log without installing host tools:
+
+```sh
+docker compose exec monitor tail -n 50 /data/runs/RUN_UUID/gowitness.log
+```
+
+Generation attempts also retain `generator.log`; discovery retains per-root
+stderr logs. A reused generation cache does not launch AIL or create a new AIL
+log. For native runs, the same application stage messages appear in the terminal
+and tool logs live under `standalone/data/runs/RUN_UUID/`.
 
 ## Inspect the current progress with local examples
 
@@ -142,6 +192,6 @@ Global options precede the command, for example:
 python3 standalone/run.py --gowitness-path /path/to/gowitness --chrome-path /path/to/chromium serve --port 5055
 ```
 
-The Docker configuration reuses the maintained image definition and has been
-checked against the application commands. A container build/run has not been
-verified in this workspace because no Docker daemon is available here.
+The Docker configuration reuses the maintained image definition. The image has
+been built successfully, and its bundled scanner tools passed `doctor` in a
+disposable container using the read-only application filesystem.

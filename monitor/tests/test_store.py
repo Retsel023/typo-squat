@@ -1,10 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from uuid import UUID
 
 from typo_monitor.store import Store
@@ -268,6 +270,8 @@ class StoreTests(unittest.TestCase):
         migrated.bind_comparison_scope(self.project_id, scope)
         self.assertEqual(Store(legacy_dir).get_project(self.project_id)["comparison_scope"], scope)
         self.assertEqual(migrated.get_project(self.project_id)["name"], "Legacy")
+        self.assertIsNone(migrated.get_project(self.project_id)["schedule_interval_hours"])
+        self.assertIsNone(migrated.get_project(self.project_id)["schedule_next_run_at"])
 
     def test_domain_counts_and_filtered_pagination(self):
         self.scan({"alpha.example": POSITIVE, "beta.example": UNKNOWN, "gamma.example": POSITIVE})
@@ -562,6 +566,102 @@ class StoreTests(unittest.TestCase):
                         observations={"typo.example": POSITIVE}, source_status=SUCCESS, generation=generation)
                 self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), set())
                 self.store.fail_run(pending["id"], "Invalid generation metadata")
+
+    def test_cancelled_scan_preserves_accepted_state_cache_and_breaks_negative_sequence(self):
+        self.scan({"typo.example": POSITIVE}, generation={"signature": "generator-v1", "seeds": ["example.com"]})
+        self.scan({"typo.example": NEGATIVE})
+        previous_state = self.store.get_domains(self.project_id)
+        previous_inventory = self.store.inventory(self.project_id)
+        pending = self.store.start_run(self.project_id)
+        cancelled = self.store.cancel_run(pending["id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["error"], "Scan cancelled by user.")
+        self.assertIsNotNone(cancelled["finished_at"])
+        self.assertEqual(self.store.get_domains(self.project_id), previous_state)
+        self.assertEqual(self.store.inventory(self.project_id), previous_inventory)
+        self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), {"example.com"})
+        with self.assertRaisesRegex(ValueError, "already finished"):
+            self.store.finish_run(pending["id"], seeds=["portal.example.com"], candidates=["new.example"],
+                observations={"new.example": POSITIVE}, source_status=SUCCESS,
+                generation={"signature": "generator-v1", "seeds": ["portal.example.com"]})
+        self.assertEqual(self.store.inventory(self.project_id), previous_inventory)
+        self.assertEqual(self.store.get_domains(self.project_id), previous_state)
+        self.assertEqual(self.store.generation_cache(self.project_id, "generator-v1"), {"example.com"})
+        run = self.scan({"typo.example": NEGATIVE})
+        self.assertEqual(run["events"], [])
+        self.assertEqual(self.domain()["missing_count"], 1)
+        self.assertEqual(self.scan({"typo.example": NEGATIVE})["events"][0]["kind"], "missing_confirmed")
+
+    def test_cancellation_is_idempotent_and_cannot_overwrite_terminal_run(self):
+        accepted = self.scan({"typo.example": POSITIVE})
+        self.assertEqual(self.store.cancel_run(accepted["id"]), accepted)
+        with self.assertRaises(KeyError):
+            self.store.cancel_run("missing")
+        pending = self.store.start_run(self.project_id)
+        cancelled = self.store.cancel_run(pending["id"], "Stopped by the client")
+        self.assertEqual(self.store.get_run(pending["id"])["error"], "Stopped by the client")
+        self.assertEqual(self.store.cancel_run(pending["id"]), cancelled)
+        replacement = self.store.start_run(self.project_id)
+        self.store.fail_run(replacement["id"], "Fixture cleanup")
+
+    def test_default_schedule_inherits_server_setting_and_advance_is_noop(self):
+        self.assertIsNone(self.project["schedule_interval_hours"])
+        self.assertIsNone(self.project["schedule_next_run_at"])
+        self.assertEqual(self.store.advance_schedule(self.project_id), self.project)
+        self.assertIsNone(Store(self.temp.name).get_project(self.project_id)["schedule_interval_hours"])
+        self.assertEqual(self.store.due_projects("2026-10-17T10:00:00Z"), [])
+
+    def test_project_schedule_deadline_survives_restart_and_advances_from_queue_time(self):
+        with patch("typo_monitor.store._now", return_value="2026-10-16T10:00:00.000000+00:00"):
+            scheduled = self.store.set_schedule(self.project_id, 24)
+        self.assertEqual(scheduled["schedule_interval_hours"], 24)
+        self.assertEqual(scheduled["schedule_next_run_at"], "2026-10-17T10:00:00.000000+00:00")
+        reopened = Store(self.temp.name)
+        self.assertEqual(reopened.get_project(self.project_id)["schedule_next_run_at"], scheduled["schedule_next_run_at"])
+        self.assertEqual(reopened.due_projects("2026-10-17T09:59:59Z"), [])
+        self.assertEqual([project["id"] for project in reopened.due_projects("2026-10-17T10:00:00Z")], [self.project_id])
+        advanced = reopened.advance_schedule(self.project_id, datetime(2026, 10, 17, 10, 5, tzinfo=timezone.utc))
+        self.assertEqual(advanced["schedule_next_run_at"], "2026-10-18T10:05:00.000000+00:00")
+        self.assertEqual(Store(self.temp.name).get_project(self.project_id)["schedule_next_run_at"], advanced["schedule_next_run_at"])
+
+    def test_each_project_has_independent_schedule_and_off_clears_deadline(self):
+        other = self.store.create_project("Other client", ["other.example"])
+        with patch("typo_monitor.store._now", return_value="2026-10-16T10:00:00Z"):
+            self.store.set_schedule(self.project_id, 1)
+            self.store.set_schedule(other["id"], 6)
+        self.assertEqual([project["id"] for project in self.store.due_projects("2026-10-16T11:00:00Z")], [self.project_id])
+        self.store.advance_schedule(self.project_id, "2026-10-16T11:00:00Z")
+        self.assertEqual(self.store.get_project(other["id"])["schedule_next_run_at"], "2026-10-16T16:00:00.000000+00:00")
+        disabled = self.store.set_schedule(self.project_id, 0)
+        self.assertEqual(disabled["schedule_interval_hours"], 0)
+        self.assertIsNone(disabled["schedule_next_run_at"])
+        self.assertIsNone(self.store.advance_schedule(self.project_id, "2026-10-17T10:00:00Z")["schedule_next_run_at"])
+        self.assertEqual([project["id"] for project in self.store.due_projects("2026-10-17T10:00:00Z")], [other["id"]])
+
+    def test_due_projects_excludes_active_and_simulated_projects(self):
+        demo = self.store.create_project("Offline preview", ["demo.example"])
+        run = self.store.start_run(demo["id"])
+        self.store.finish_run(run["id"], seeds=["demo.example"], candidates=["demo.example"],
+                             observations={"demo.example": POSITIVE}, source_status={"demo": {"status": "ok"}})
+        with patch("typo_monitor.store._now", return_value="2026-10-16T10:00:00Z"):
+            self.store.set_schedule(self.project_id, 1)
+            self.store.set_schedule(demo["id"], 1)
+        active = self.store.start_run(self.project_id)
+        self.assertEqual(self.store.due_projects("2026-10-16T12:00:00Z"), [])
+        self.store.cancel_run(active["id"])
+        self.assertEqual([project["id"] for project in self.store.due_projects("2026-10-16T12:00:00Z")], [self.project_id])
+
+    def test_invalid_schedule_does_not_change_existing_interval_or_deadline(self):
+        with patch("typo_monitor.store._now", return_value="2026-10-16T10:00:00Z"):
+            original = self.store.set_schedule(self.project_id, 12)
+        for interval in (-1, 0.5, 8761, float("nan"), float("inf"), -float("inf"), True, None, "24", {}, 10 ** 1000):
+            with self.subTest(interval=interval), self.assertRaises(ValueError):
+                self.store.set_schedule(self.project_id, interval)
+            self.assertEqual(self.store.get_project(self.project_id), original)
+        for now in ("not-a-date", "2026-10-16T12:00:00", datetime(2026, 10, 16), True):
+            with self.subTest(now=now), self.assertRaises(ValueError):
+                self.store.advance_schedule(self.project_id, now)
+            self.assertEqual(self.store.get_project(self.project_id), original)
 
 
 if __name__ == "__main__":

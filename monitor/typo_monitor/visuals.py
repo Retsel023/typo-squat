@@ -122,7 +122,7 @@ def _empty_visual() -> dict:
 
 
 def annotate_captures(captures: dict, *, workdir: Path,
-                      previous: Callable[[str, str], dict | None], data_dir: Path) -> dict:
+                      previous: Callable[[str, str], dict | None], data_dir: Path, cancel_event=None) -> dict:
     """Add visual metadata in place, retaining every capture and its raw image.
 
     ``previous(domain, scheme)`` supplies the last successful capture metadata.
@@ -131,14 +131,21 @@ def annotate_captures(captures: dict, *, workdir: Path,
     """
     cache = {}
 
+    def check_cancel():
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Visual comparison interrupted; previously accepted observations were preserved.")
+
     def fingerprint(path):
+        check_cancel()
         if path not in cache:
             cache[path] = _fingerprint(path)
         return cache[path]
 
     for domain, attempts in captures.items():
+        check_cancel()
         current = {}
         for attempt in attempts:
+            check_cancel()
             visual = _empty_visual()
             attempt["visual"] = visual
             scheme = attempt.get("scheme")
