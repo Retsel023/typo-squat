@@ -66,6 +66,25 @@ schedule enabled. Stopping restarts its interval from the cancellation time,
 preventing an overdue scan from immediately restarting. Disable the schedule
 separately when desired. Simulated demo projects are never automatically scanned.
 
+Choose **DNS workers** when creating a client, or save it on the client's page
+before starting a scan. Use 20 for up to 20 parallel domain checks; the supported
+range is 1–128. A blank setting follows the server default of 24. This setting
+also controls the subsequent DNS parking checks; browser captures have a
+separate worker limit. Each queued scan keeps its chosen count, so editing a
+client affects scans queued afterward. The run page shows the count used.
+
+To change the Docker server default for clients that inherit it:
+
+```sh
+TYPO_DNS_WORKERS=20 TYPO_STANDALONE_PORT=5057 docker compose up --build -d
+```
+
+Saved client overrides still take precedence. The current backend uses Python
+DNS, including A, AAAA and CNAME observations, rather than invoking the legacy
+MassDNS command. DNS work is refilled as checks finish, keeping available
+workers busy without waiting for a whole batch. All inventory names are queried
+again on every run; generation caching never substitutes for fresh DNS.
+
 ## Follow an actual scan
 
 ```sh

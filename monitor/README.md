@@ -169,6 +169,18 @@ services:
     command: ["python", "-m", "typo_monitor", "--data-dir", "/data", "--resolver", "1.1.1.1", "serve", "--host", "0.0.0.0", "--port", "5000", "--interval-hours", "24"]
 ```
 
+Choose **DNS workers** when creating a client or on its project page before
+starting a scan: an integer from 1 to 128, or blank to inherit the server default
+of 24. Each enqueued run freezes its effective count and displays it in run
+details; changing the project affects later submissions, including scheduled
+ones. This limit covers domain DNS observations and the later DNS parking
+stage. Browser capture concurrency remains separate. Workers take the next
+name as soon as a check completes, avoiding pauses behind a slow batch.
+
+The server default can be set with `--workers 20` before the CLI command, or
+`TYPO_DNS_WORKERS=20`. Both Compose profiles pass that environment variable into
+the container. A saved project setting takes precedence over the server default.
+
 Other global options: `--workers` (default 24 DNS workers), `--dns-timeout`
 (4 seconds per query), `--max-candidates` (250,000). Exceeding the candidate limit
 fails a run rather than truncating coverage. AIL generation has a 15-minute

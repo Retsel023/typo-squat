@@ -131,11 +131,24 @@ def create_app(service):
             g.navigation_projects = service.store.list_projects()
         return g.navigation_projects
 
+    def default_dns_workers():
+        workers = getattr(service, "dns_workers", None)
+        return workers if workers is not None else (getattr(getattr(service, "resolver", None), "workers", 24) or 24)
+
+    def parse_dns_workers(value):
+        value = value.strip()
+        if not value:
+            return None
+        if not value.isascii() or not value.isdigit() or len(value) > 3 or not 1 <= int(value) <= 128:
+            raise ValueError("DNS workers must be a whole number from 1 to 128, or blank for the server default.")
+        return int(value)
+
     @app.context_processor
     def common_context():
         return {"csrf_token": session.get("csrf_token", ""), "domain_labels": DOMAIN_LABELS,
                 "event_labels": EVENT_LABELS, "run_labels": RUN_LABELS,
                 "interval_hours": getattr(service, "interval_hours", 0),
+                "server_dns_workers": default_dns_workers(),
                 "navigation_projects": navigation_projects()}
 
     def project_or_404(project_id):
@@ -202,6 +215,7 @@ def create_app(service):
     def create_project():
         name = request.form.get("name", "").strip()
         roots_text = request.form.get("roots", "")
+        workers_text = request.form.get("dns_workers", "")
         try:
             if not name or len(name) > 120:
                 raise ValueError("Give your project a name between 1 and 120 characters.")
@@ -210,11 +224,12 @@ def create_app(service):
                 raise ValueError("Add at least one root domain.")
             if len(roots) > 500:
                 raise ValueError("Add no more than 500 root domains to one project.")
-            project = service.create_project(name, roots)
+            dns_workers = parse_dns_workers(workers_text)
+            project = service.create_project(name, roots, dns_workers=dns_workers)
         except ValueError as error:
             flash(str(error), "error")
             # Keep submitted values without embedding them in a redirect URL.
-            return render_template("create.html", form={"name": name, "roots": roots_text}, page="new"), 400
+            return render_template("create.html", form={"name": name, "roots": roots_text, "dns_workers": workers_text}, page="new"), 400
         flash("Project created. Start a scan to establish its first baseline.", "success")
         return redirect(url_for("project_detail", project_id=project["id"]), code=303)
 
@@ -267,6 +282,11 @@ def create_app(service):
             inherited = project.get("schedule_interval_hours") is None
             schedule = {"interval_hours": getattr(service, "interval_hours", 0) if inherited else project["schedule_interval_hours"],
                         "next_run_at": project.get("schedule_next_run_at"), "inherited": inherited}
+        if hasattr(service, "dns_status"):
+            dns_settings = service.dns_status(project)
+        else:
+            inherited = project.get("dns_workers") is None
+            dns_settings = {"workers": default_dns_workers() if inherited else project["dns_workers"], "inherited": inherited}
         return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
                                counts=counts, query=query, status_filter=status,
                                runs=runs, last_run=last_run, page="project",
@@ -277,7 +297,7 @@ def create_app(service):
                                seed_filter=seed, source_sections=source_sections,
                                source_group_count=len(groups), source_total=source_total,
                                default_count=default_count, hidden_count=counts["total"] - default_count,
-                               filter_params=filter_params, view=view, schedule=schedule,
+                               filter_params=filter_params, view=view, schedule=schedule, dns_settings=dns_settings,
                                gallery_params={**filter_params, "view": "gallery"},
                                table_params={**filter_params, "view": "table"},
                                has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved"))
@@ -419,6 +439,19 @@ def create_app(service):
             abort(400, description=str(error))
         flash("Automatic scans are off for this project." if hours == 0 else "Scan schedule saved for this project.", "success")
         return redirect(url_for("project_detail", project_id=project_id, _anchor="schedule"), code=303)
+
+    @app.post("/projects/<uuid:project_id>/dns-settings")
+    def update_dns_settings(project_id):
+        project = project_or_404(project_id)
+        if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
+            abort(409, description="Simulated demo projects are read only. Create a separate project for real scans.")
+        try:
+            workers = parse_dns_workers("" if request.form.get("action") == "inherit" else request.form.get("dns_workers", ""))
+            service.store.set_dns_workers(str(project_id), workers)
+        except ValueError as error:
+            abort(400, description=str(error))
+        flash("DNS settings saved for future scans in this project.", "success")
+        return redirect(url_for("project_detail", project_id=project_id, _anchor="dns-settings"), code=303)
 
     @app.post("/runs/<uuid:run_id>/cancel")
     def cancel_scan(run_id):

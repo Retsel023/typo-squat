@@ -3,6 +3,7 @@
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 import signal
 import sys
@@ -20,7 +21,8 @@ def parser():
     p.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent.parent / "data")
     p.add_argument("--no-discovery", action="store_true", help="Explicitly skip Subfinder, retaining known seeds")
     p.add_argument("--resolver", action="append", help="Recursive DNS server IP; repeat for multiple servers")
-    p.add_argument("--workers", type=int, default=24)
+    p.add_argument("--workers", type=int, default=os.environ.get("TYPO_DNS_WORKERS", "24"),
+                   help="Default parallel DNS workers, 1–128 (TYPO_DNS_WORKERS, otherwise 24); client settings override")
     p.add_argument("--dns-timeout", type=float, default=4)
     p.add_argument("--max-candidates", type=int, default=250_000)
     p.add_argument("--no-screenshots", action="store_true", help="Explicitly skip browser captures; DNS monitoring continues")

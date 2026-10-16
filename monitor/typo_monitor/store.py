@@ -29,7 +29,7 @@ def _json(value) -> str:
 
 class Store:
     _RUN_SUMMARY_COLUMNS = ("id,project_id,status,started_at,finished_at,is_baseline,"
-                            "'[]' AS events_json,counts_json,source_status_json,error")
+                            "'[]' AS events_json,counts_json,source_status_json,error,dns_workers")
     _STATE_QUERY = """SELECT d.*,
         EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id
             AND i.domain=d.domain AND i.kind='seed') AS is_seed,
@@ -49,7 +49,7 @@ class Store:
                     roots_json TEXT NOT NULL, created_at TEXT NOT NULL,
                     baseline_run_id TEXT, comparison_scope_json TEXT,
                     schedule_interval_hours REAL DEFAULT NULL,
-                    schedule_next_run_at TEXT
+                    schedule_next_run_at TEXT, dns_workers INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
@@ -57,7 +57,8 @@ class Store:
                     is_baseline INTEGER NOT NULL DEFAULT 0,
                     events_json TEXT NOT NULL DEFAULT '[]',
                     counts_json TEXT NOT NULL DEFAULT '{}',
-                    source_status_json TEXT NOT NULL DEFAULT '{}', error TEXT
+                    source_status_json TEXT NOT NULL DEFAULT '{}', error TEXT,
+                    dns_workers INTEGER
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS one_running_scan
                     ON runs(project_id) WHERE status = 'running';
@@ -128,6 +129,11 @@ class Store:
                 db.execute("ALTER TABLE projects ADD COLUMN schedule_interval_hours REAL DEFAULT NULL")
             if "schedule_next_run_at" not in columns:
                 db.execute("ALTER TABLE projects ADD COLUMN schedule_next_run_at TEXT")
+            if "dns_workers" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN dns_workers INTEGER")
+            run_columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)")}
+            if "dns_workers" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN dns_workers INTEGER")
             db.execute("""CREATE INDEX IF NOT EXISTS project_schedule_due ON projects(schedule_next_run_at)
                 WHERE schedule_interval_hours>0""")
             capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
@@ -348,6 +354,20 @@ class Store:
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
     @staticmethod
+    def _dns_workers(workers):
+        if workers is not None and (not isinstance(workers, int) or isinstance(workers, bool) or not 1 <= workers <= 128):
+            raise ValueError("DNS workers must be an integer between 1 and 128, or null to inherit.")
+        return workers
+
+    def set_dns_workers(self, project_id, workers):
+        """Set future scan concurrency; existing run snapshots remain unchanged."""
+        workers = self._dns_workers(workers)
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            db.execute("UPDATE projects SET dns_workers=? WHERE id=?", (workers, project_id))
+            return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+    @staticmethod
     def _schedule_now(now=None):
         try:
             value = _now() if now is None else now
@@ -447,14 +467,16 @@ class Store:
             return {row[0] for row in db.execute(
                 "SELECT seed FROM generation_markers WHERE project_id=? AND signature=?", (project_id, signature))}
 
-    def start_run(self, project_id):
+    def start_run(self, project_id, *, dns_workers=None):
+        dns_workers = self._dns_workers(dns_workers)
         with self._connection(write=True) as db:
-            self._require_project(db, project_id)
+            project = self._require_project(db, project_id)
+            workers = self._dns_workers(project["dns_workers"] if dns_workers is None else dns_workers)
             if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
                 raise RuntimeError("A scan is already running for this project.")
             run_id = str(uuid4())
-            db.execute("INSERT INTO runs(id,project_id,status,started_at) VALUES(?,?, 'running', ?)",
-                       (run_id, project_id, _now()))
+            db.execute("INSERT INTO runs(id,project_id,status,started_at,dns_workers) VALUES(?,?, 'running', ?,?)",
+                       (run_id, project_id, _now(), workers))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     @staticmethod

@@ -1,12 +1,13 @@
 """Bounded external discovery/generation and explicit DNS observation results."""
 
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from importlib.metadata import distribution, version
 from pathlib import Path
 import hashlib
 import ipaddress
 import json
 import logging
+import math
 import os
 import shutil
 import signal
@@ -15,6 +16,7 @@ import sys
 import time
 
 from .domains import normalize_domain, parse_domains
+from .concurrency import bounded_map
 
 LOG = logging.getLogger(__name__)
 
@@ -174,7 +176,9 @@ class DnsResolver:
     """Query A/AAAA/CNAME. An incomplete response cannot replace a full RRset."""
 
     def __init__(self, nameservers=None, lifetime=4, workers=24, resolver_factory=None):
-        if lifetime <= 0 or not 1 <= workers <= 128:
+        if (not math.isfinite(lifetime) or lifetime <= 0
+                or not isinstance(workers, int) or isinstance(workers, bool)
+                or not 1 <= workers <= 128):
             raise ValueError("DNS lifetime must be positive and workers must be 1–128.")
         self.nameservers = list(nameservers) if nameservers else None
         if self.nameservers:
@@ -231,21 +235,23 @@ class DnsResolver:
                 "missing_threshold": 2, "semantics": 1}
 
     def resolve(self, candidates):
-        # executor.map bounds in-flight submissions on supported Python 3.10+ by
-        # processing chunks; all candidates must receive an explicit observation.
         result = {}
         last_report = time.monotonic()
-        with ThreadPoolExecutor(max_workers=self.workers) as executor:
-            for offset in range(0, len(candidates), self.workers * 4):
-                if getattr(self, "cancel_event", None) is not None and self.cancel_event.is_set():
-                    raise RuntimeError("DNS scan canceled during shutdown; accepted observations were preserved.")
-                chunk = candidates[offset:offset + self.workers * 4]
-                result.update(zip(chunk, executor.map(self.observe, chunk)))
+
+        def check_cancel():
+            if getattr(self, "cancel_event", None) is not None and self.cancel_event.is_set():
+                raise RuntimeError("DNS scan canceled during shutdown; accepted observations were preserved.")
+
+        with closing(bounded_map(self.observe, candidates, workers=self.workers,
+                                 check_cancel=check_cancel, thread_name_prefix="dns")) as completed:
+            for domain, observation in completed:
+                result[domain] = observation
                 if time.monotonic() - last_report >= 5 or len(result) == len(candidates):
-                    statuses = [observation["status"] for observation in result.values()]
+                    statuses = [row["status"] for row in result.values()]
                     LOG.info("Run %s: DNS %d/%d checked; %d resolved, %d negative, %d uncertain",
                              getattr(self, "run_id", "manual"), len(result), len(candidates),
                              statuses.count("resolved"), statuses.count("nxdomain") + statuses.count("noanswer"),
                              statuses.count("unknown"))
                     last_report = time.monotonic()
+        check_cancel()
         return result

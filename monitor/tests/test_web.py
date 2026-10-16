@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -19,6 +20,7 @@ class FakeStore:
         self.domains = {}
         self.captures = {}
         self.schedules = []
+        self.dns_settings_updates = []
 
     def list_projects(self):
         return [self.get_project(project_id) for project_id in self.projects]
@@ -66,6 +68,11 @@ class FakeStore:
         project["schedule_next_run_at"] = "2026-10-17T12:00:00+00:00" if interval_hours else None
         return self.get_project(project_id)
 
+    def set_dns_workers(self, project_id, workers):
+        self.dns_settings_updates.append((project_id, workers))
+        self.projects[project_id]["dns_workers"] = workers
+        return self.get_project(project_id)
+
     def domain_counts(self, project_id):
         domains = self.get_domains(project_id)
         return {"total": len(domains), **{status: sum(domain.get("status") == status for domain in domains) for status in ["resolved", "pending_missing", "missing", "unknown"]}}
@@ -99,9 +106,10 @@ class FakeService:
         self.busy = False
         self.cancellations = []
         self.interval_hours = 0
+        self.resolver = SimpleNamespace(workers=24)
 
-    def create_project(self, name, roots):
-        project = {"id": str(uuid4()), "name": name, "roots": roots, "created_at": "2026-10-16T12:00:00+00:00"}
+    def create_project(self, name, roots, *, dns_workers=None):
+        project = {"id": str(uuid4()), "name": name, "roots": roots, "created_at": "2026-10-16T12:00:00+00:00", "dns_workers": dns_workers}
         self.store.projects[project["id"]] = project
         return project
 
@@ -111,6 +119,7 @@ class FakeService:
         self.submissions.append(project_id)
         run = {"id": str(uuid4()), "project_id": project_id, "status": "running",
                "started_at": "2026-10-16T12:00:00+00:00", "finished_at": None,
+               "dns_workers": self.dns_status(self.store.get_project(project_id))["workers"],
                "is_baseline": False, "events": [], "counts": {}, "source_status": {}}
         self.store.runs[run["id"]] = run
         return run
@@ -124,6 +133,10 @@ class FakeService:
         if run["status"] == "running":
             run.update(status="cancelled", finished_at="2026-10-16T12:01:00+00:00")
         return run
+
+    def dns_status(self, project):
+        inherited = project.get("dns_workers") is None
+        return {"workers": getattr(self, "dns_workers", self.resolver.workers) if inherited else project["dns_workers"], "inherited": inherited}
 
 
 class WebTests(unittest.TestCase):
@@ -830,12 +843,12 @@ class WebTests(unittest.TestCase):
         project = self.project()
         self.service.interval_hours = 24
         page = self.client.get(f"/projects/{project['id']}")
-        self.assertIn(b"Following the server default", page.data)
+        self.assertIn(b"Following the server default", page.data.split(b'id="schedule"', 1)[1].split(b'</section>', 1)[0])
         self.assertIn(b"Every 24 hours", page.data)
         token = self.token()
         self.client.post(f"/projects/{project['id']}/schedule", data={"csrf_token": token, "action": "off"})
         page = self.client.get(f"/projects/{project['id']}")
-        self.assertNotIn(b"Following the server default", page.data)
+        self.assertNotIn(b"Following the server default", page.data.split(b'id="schedule"', 1)[1].split(b'</section>', 1)[0])
         self.assertNotIn(b"Every 24 hours", page.data)
         self.assertIn(b"Start scans manually while this schedule is off", page.data)
 
@@ -861,6 +874,101 @@ class WebTests(unittest.TestCase):
         self.assertIn(b"Stopping a scan leaves this schedule enabled", page.data)
         self.assertNotIn(f'action="/runs/{run["id"]}/cancel"'.encode(), page.data)
         self.assertNotIn("Stopping…".encode(), page.data)
+
+    def test_creation_forms_offer_dns_workers_and_accept_twenty_before_first_scan(self):
+        for path in ("/", "/projects/new"):
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b'name="dns_workers"', response.data)
+            self.assertIn(b'placeholder="Server default (24)"', response.data)
+        response = self.client.post("/projects", data={"csrf_token": self.token(), "name": "Clazing", "roots": "clazing.example", "dns_workers": "20"})
+        self.assertEqual(response.status_code, 303)
+        project = next(iter(self.service.store.projects.values()))
+        self.assertEqual(project["dns_workers"], 20)
+        self.assertIsInstance(project["dns_workers"], int)
+        self.assertEqual(self.service.submissions, [])
+        self.assertIn(b"20 workers", self.client.get(response.headers["Location"]).data)
+        run = self.service.submit_scan(project["id"])
+        self.assertEqual(run["dns_workers"], 20)
+        self.assertIn(b'DNS workers for this scan</span><strong>20</strong>', self.client.get(f"/runs/{run['id']}").data)
+
+    def test_creation_workers_blank_inherits_and_invalid_values_do_not_create_projects(self):
+        token = self.token()
+        for workers in ("0", "129", "20.0", "-1", "1e2", "nan", "inf", "garbage", "２０"):
+            with self.subTest(workers=workers):
+                response = self.client.post("/projects", data={"csrf_token": token, "name": "Clazing", "roots": "clazing.example", "dns_workers": workers})
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.service.store.projects, {})
+        for workers in ("", "1", "128"):
+            with self.subTest(valid=workers):
+                response = self.client.post("/projects", data={"csrf_token": token, "name": "Clazing", "roots": "clazing.example", "dns_workers": workers})
+                self.assertEqual(response.status_code, 303)
+        values = [project["dns_workers"] for project in self.service.store.projects.values()]
+        self.assertEqual(values, [None, 1, 128])
+
+    def test_dns_settings_change_only_the_selected_client_and_future_queued_scans(self):
+        clazing, other = self.project("Clazing"), self.project("Other client")
+        active = self.service.submit_scan(clazing["id"])
+        self.assertEqual(active["dns_workers"], 24)
+        response = self.client.post(f"/projects/{clazing['id']}/dns-settings", data={"csrf_token": self.token(), "dns_workers": "20"})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["Location"], f"/projects/{clazing['id']}#dns-settings")
+        self.assertEqual(self.service.store.dns_settings_updates, [(clazing["id"], 20)])
+        self.assertIsNone(self.service.store.projects[other["id"]]["dns_workers"])
+        self.assertEqual(active["dns_workers"], 24)
+        page = self.client.get(f"/projects/{clazing['id']}")
+        self.assertIn(b"20 workers", page.data)
+        self.assertIn(b"This active scan uses 24 workers", page.data)
+        self.assertIn(b"Queued and running scans keep their original setting", page.data)
+        self.assertEqual(self.service.submissions, [clazing["id"]])
+        active["status"] = "completed"
+        next_run = self.service.submit_scan(clazing["id"])
+        self.assertEqual(next_run["dns_workers"], 20)
+        self.assertEqual(active["dns_workers"], 24)
+
+    def test_dns_settings_reset_to_server_default_and_respect_csrf_validation_and_demo(self):
+        project = self.project()
+        route = f"/projects/{project['id']}/dns-settings"
+        self.assertEqual(self.client.post(route, data={"dns_workers": "20"}).status_code, 400)
+        token = self.token()
+        for workers in ("0", "129", "1.5", "-1", "1e1", "nan", "inf", "invalid"):
+            with self.subTest(workers=workers):
+                self.assertEqual(self.client.post(route, data={"csrf_token": token, "dns_workers": workers}).status_code, 400)
+        self.assertEqual(self.service.store.dns_settings_updates, [])
+        self.assertEqual(self.client.post(route, data={"csrf_token": token, "dns_workers": "20"}).status_code, 303)
+        self.assertEqual(self.client.post(route, data={"csrf_token": token, "dns_workers": ""}).status_code, 303)
+        self.assertIsNone(self.service.store.projects[project["id"]]["dns_workers"])
+        page = self.client.get(f"/projects/{project['id']}")
+        self.assertIn(b"24 workers", page.data)
+        self.assertIn(b'placeholder="Server default (24)"', page.data)
+        run = self.service.submit_scan(project["id"])
+        run.update(status="completed", source_status={"demo": {"status": "ok"}})
+        previous = list(self.service.store.dns_settings_updates)
+        self.assertEqual(self.client.post(route, data={"csrf_token": token, "dns_workers": "20"}).status_code, 409)
+        self.assertEqual(self.service.store.dns_settings_updates, previous)
+        self.assertEqual(self.client.post(f"/projects/{uuid4()}/dns-settings", data={"csrf_token": token, "dns_workers": "20"}).status_code, 404)
+
+    def test_dns_worker_context_uses_server_default_and_run_history_never_invents_it(self):
+        self.service.resolver.workers = 32
+        project = self.project()
+        self.assertIn(b'placeholder="Server default (32)"', self.client.get("/projects/new").data)
+        self.assertIn(b"32 workers", self.client.get(f"/projects/{project['id']}").data)
+        run = self.service.submit_scan(project["id"])
+        self.service.store.set_dns_workers(project["id"], 20)
+        run["status"] = "completed"
+        page = self.client.get(f"/runs/{run['id']}")
+        self.assertIn(b'DNS workers for this scan</span><strong>32</strong>', page.data)
+        run["dns_workers"] = None  # Historical captures predate the setting.
+        page = self.client.get(f"/runs/{run['id']}")
+        self.assertIn(b'DNS workers for this scan</span><strong>Not recorded</strong>', page.data)
+
+    def test_server_default_placeholder_does_not_follow_active_run_worker_override(self):
+        self.service.dns_workers = 24
+        self.service.resolver.workers = 20  # The single worker is executing a client override.
+        for path in ("/", "/projects/new"):
+            page = self.client.get(path)
+            self.assertIn(b'placeholder="Server default (24)"', page.data)
+            self.assertNotIn(b'placeholder="Server default (20)"', page.data)
 
 
 if __name__ == "__main__":

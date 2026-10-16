@@ -4,8 +4,8 @@ These narrowly scoped provider indicators are heuristics, not a safety verdict.
 Only exact candidate NS answers and the candidate's existing CNAME records count.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping
+from contextlib import closing
 import ipaddress
 import math
 import re
@@ -14,6 +14,7 @@ import dns.exception
 import dns.resolver
 
 from .domains import normalize_domain
+from .concurrency import bounded_map
 
 
 # Provider-published parking endpoints; sources and limitations: docs/PARKING.md.
@@ -158,14 +159,12 @@ class ParkingClassifier:
         # Exact names are queried at most once per call. No cached parking hint
         # survives a subsequent run, so parked-to-active transitions stay visible.
         names = list(pending)
-        with ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="parking") as executor:
-            for offset in range(0, len(names), self.workers * 4):
-                self._check_shutdown()
-                chunk = names[offset:offset + self.workers * 4]
-                for domain, result in zip(chunk, executor.map(self._lookup_ns, chunk)):
-                    for original_domain in pending[domain]:
-                        enriched[original_domain]["parking"] = _result(
-                            result["status"], result["evidence"], result["provider"],
-                        )
+        with closing(bounded_map(self._lookup_ns, names, workers=self.workers,
+                                 check_cancel=self._check_shutdown, thread_name_prefix="parking")) as completed:
+            for domain, result in completed:
+                for original_domain in pending[domain]:
+                    enriched[original_domain]["parking"] = _result(
+                        result["status"], result["evidence"], result["provider"],
+                    )
         self._check_shutdown()
         return enriched

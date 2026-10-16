@@ -2,6 +2,8 @@ services:
   monitor:
     build: .
     image: typo-monitor:local
+    environment:
+      TYPO_DNS_WORKERS: "${TYPO_DNS_WORKERS:-24}"
     init: true
     shm_size: 256mb
     restart: unless-stopped

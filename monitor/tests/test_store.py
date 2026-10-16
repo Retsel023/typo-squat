@@ -663,6 +663,63 @@ class StoreTests(unittest.TestCase):
                 self.store.advance_schedule(self.project_id, now)
             self.assertEqual(self.store.get_project(self.project_id), original)
 
+    def test_dns_workers_inherit_default_and_snapshot_project_setting_until_finished(self):
+        self.assertIsNone(self.project["dns_workers"])
+        inherited = self.store.start_run(self.project_id)
+        self.assertIsNone(inherited["dns_workers"])
+        self.store.cancel_run(inherited["id"])
+        self.store.set_dns_workers(self.project_id, 24)
+        run = self.store.start_run(self.project_id)
+        self.assertEqual(run["dns_workers"], 24)
+        self.store.set_dns_workers(self.project_id, 64)
+        self.assertEqual(self.store.get_run(run["id"])["dns_workers"], 24)
+        completed = self.store.finish_run(run["id"], seeds=["example.com"], candidates=["typo.example"],
+            observations={"typo.example": POSITIVE}, source_status=SUCCESS)
+        self.assertEqual(completed["dns_workers"], 24)
+        self.assertEqual(Store(self.temp.name).get_run(run["id"])["dns_workers"], 24)
+        self.assertEqual(self.store.get_project(self.project_id)["last_run"]["dns_workers"], 24)
+        self.assertEqual(self.store.list_runs(self.project_id, include_events=False)[0]["dns_workers"], 24)
+        next_run = self.store.start_run(self.project_id)
+        self.assertEqual(next_run["dns_workers"], 64)
+        self.store.cancel_run(next_run["id"])
+
+    def test_dns_workers_explicit_run_override_does_not_modify_project_default(self):
+        self.store.set_dns_workers(self.project_id, 32)
+        run = self.store.start_run(self.project_id, dns_workers=128)
+        self.assertEqual(run["dns_workers"], 128)
+        self.assertEqual(self.store.get_project(self.project_id)["dns_workers"], 32)
+        self.store.cancel_run(run["id"])
+        project = self.store.set_dns_workers(self.project_id, None)
+        self.assertIsNone(project["dns_workers"])
+        self.assertIsNone(Store(self.temp.name).get_project(self.project_id)["dns_workers"])
+        inherited = self.store.start_run(self.project_id)
+        self.assertIsNone(inherited["dns_workers"])
+        self.store.cancel_run(inherited["id"])
+
+    def test_invalid_dns_worker_settings_do_not_mutate_project_or_create_runs(self):
+        original = self.store.set_dns_workers(self.project_id, 1)
+        for workers in (0, -1, 129, True, False, 24.0, 1.5, "24", "", [], float("nan")):
+            with self.subTest(workers=workers):
+                with self.assertRaises(ValueError):
+                    self.store.set_dns_workers(self.project_id, workers)
+                with self.assertRaises(ValueError):
+                    self.store.start_run(self.project_id, dns_workers=workers)
+                self.assertEqual(self.store.get_project(self.project_id), original)
+                self.assertEqual(self.store.list_runs(self.project_id), [])
+
+    def test_dns_worker_columns_migrate_existing_projects_and_run_history(self):
+        accepted = self.scan({"typo.example": POSITIVE})
+        with self.store._connection(write=True) as db:
+            db.execute("ALTER TABLE projects DROP COLUMN dns_workers")
+            db.execute("ALTER TABLE runs DROP COLUMN dns_workers")
+        migrated = Store(self.temp.name)
+        self.assertIsNone(migrated.get_project(self.project_id)["dns_workers"])
+        self.assertIsNone(migrated.get_run(accepted["id"])["dns_workers"])
+        migrated.set_dns_workers(self.project_id, 48)
+        reopened = Store(self.temp.name)
+        self.assertEqual(reopened.get_project(self.project_id)["dns_workers"], 48)
+        self.assertIsNone(reopened.get_run(accepted["id"])["dns_workers"])
+
 
 if __name__ == "__main__":
     unittest.main()

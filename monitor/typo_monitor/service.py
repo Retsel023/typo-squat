@@ -74,6 +74,10 @@ class MonitorService:
                  capture=True, capturer=None, scheduling=True):
         if not math.isfinite(interval_hours) or interval_hours < 0 or max_candidates < 1:
             raise ValueError("Schedule must be nonnegative and candidate limit positive.")
+        default_workers = getattr(resolver, "workers", 24)
+        if (not isinstance(default_workers, int) or isinstance(default_workers, bool)
+                or not 1 <= default_workers <= 128):
+            raise ValueError("DNS workers must be an integer between 1 and 128.")
         self.data_dir = Path(data_dir).resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._instance = InstanceLock(self.data_dir)
@@ -85,6 +89,9 @@ class MonitorService:
             raise
         self.discovery = discovery
         self.resolver = resolver or DnsResolver()
+        # Adapters are reused by the single scan worker. Keep the server default
+        # separate from whichever client's value was applied to the last run.
+        self.dns_workers = default_workers
         self.generator = generator or AilGenerator()
         self.discoverer = discoverer or Subfinder()
         if parking_classifier is None and isinstance(self.resolver, DnsResolver):
@@ -115,14 +122,23 @@ class MonitorService:
             self._scheduler = threading.Thread(target=self._schedule, daemon=True, name="schedule")
             self._scheduler.start()
 
-    def create_project(self, name, roots):
+    def create_project(self, name, roots, *, dns_workers=None):
         name = name.strip()
         if not name or len(name) > 120 or any(ord(c) < 32 for c in name):
             raise ValueError("Project name must contain 1–120 printable characters.")
         roots = parse_domains("\n".join(roots))
         if not roots or len(roots) > 500:
             raise ValueError("Enter between 1 and 500 root domains.")
-        return self.store.create_project(name, roots)
+        if dns_workers is not None and (not isinstance(dns_workers, int)
+                or isinstance(dns_workers, bool) or not 1 <= dns_workers <= 128):
+            raise ValueError("DNS workers must be an integer between 1 and 128.")
+        project = self.store.create_project(name, roots)
+        return self.store.set_dns_workers(project["id"], dns_workers) if dns_workers is not None else project
+
+    def dns_status(self, project):
+        configured = project.get("dns_workers")
+        return {"workers": self.dns_workers if configured is None else configured,
+                "inherited": configured is None}
 
     def tool_status(self):
         tools = {}
@@ -181,7 +197,7 @@ class MonitorService:
                 raise RuntimeError("This is an offline simulated project. Create a separate project for real scans.")
             scope = self.resolver.comparison_scope() if hasattr(self.resolver, "comparison_scope") else {"resolver": "injected"}
             self.store.bind_comparison_scope(project_id, scope)
-            run = self.store.start_run(project_id)
+            run = self.store.start_run(project_id, dns_workers=self.dns_status(project)["workers"])
             requested = self._cancel_events[run["id"]] = threading.Event()
             try:
                 self._futures[run["id"]] = self._executor.submit(self._execute, run)
@@ -237,6 +253,10 @@ class MonitorService:
         requested = self._cancel_events[run_id]
         self._execution.cancel = requested
         signal = _CancellationSignal(self._closed, requested)
+        workers = run.get("dns_workers") or self.dns_workers
+        self.resolver.workers = workers
+        if self.parking_classifier is not None:
+            self.parking_classifier.workers = workers
         for adapter in (self.resolver, self.generator, self.discoverer, self.parking_classifier, self.capturer):
             if adapter is not None:
                 adapter.cancel_event = signal
@@ -283,7 +303,7 @@ class MonitorService:
             if len(candidates) > self.max_candidates:
                 raise RuntimeError(f"{len(candidates):,} candidates exceed the configured {self.max_candidates:,} limit. Increase --max-candidates; inventory was not truncated.")
             (workdir / "candidates.txt").write_text("\n".join(candidates) + "\n", encoding="utf-8")
-            LOG.info("Run %s: DNS checks starting for %d candidates", run_id, len(candidates))
+            LOG.info("Run %s: DNS checks starting for %d candidates with %d workers", run_id, len(candidates), workers)
             observations = self.resolver.resolve(candidates)
             self._check_shutdown()
             if set(observations) != set(candidates):
@@ -295,6 +315,7 @@ class MonitorService:
                 observations = self.parking_classifier.enrich(observations)
                 self._check_shutdown()
                 source_status["parking"] = {"status": "ok", "detail": "DNS parking indicators only; not a safety verdict or a website content check.",
+                    "workers": workers,
                     "likely_parked": sum(o.get("parking", {}).get("status") == "likely_parked" for o in observations.values()),
                     "uncertain": sum(o.get("parking", {}).get("status") == "unknown" for o in observations.values() if o["status"] == "resolved")}
             (workdir / "observations.json").write_text(json.dumps(observations, indent=2), encoding="utf-8")
