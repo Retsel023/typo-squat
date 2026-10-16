@@ -5,6 +5,7 @@ services:
     environment:
       TYPO_DNS_WORKERS: "${TYPO_DNS_WORKERS:-24}"
       TYPO_DNS_BACKEND: "${TYPO_DNS_BACKEND:-massdns}"
+      TYPO_MAX_CANDIDATES: "${TYPO_MAX_CANDIDATES:-250000}"
       # Combined launches three independent sources; failures remain visible.
       TYPO_DISCOVERY_ENGINE: "${TYPO_DISCOVERY_ENGINE:-combined}"
       TYPO_DISCOVERY_TIMEOUT: "${TYPO_DISCOVERY_TIMEOUT:-600}"

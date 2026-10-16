@@ -29,7 +29,7 @@ MAX_SOURCE_BYTES = 12 * 1024
 MAX_OUTPUT_SOURCES = 8
 TERMINAL_STAGES = frozenset({"completed", "partial", "cancelled", "failed"})
 _TOOL_NAME = re.compile(
-    r"(?:generator\.log|gowitness\.log|(?:subfinder|assetfinder)-\d+\.(?:stderr\.log|txt)"
+    r"(?:discovery-hostnames\.txt|generator\.log|gowitness\.log|(?:subfinder|assetfinder)-\d+\.(?:stderr\.log|txt)"
     r"|amass-version\.log|amass-\d+\.(?:stdout\.log|stderr\.log|engine\.log|txt)"
     r"|massdns\.(?:stderr\.log|jsonl)|massdns-(?:a|aaaa|cname)\.(?:stderr\.log|jsonl))\Z")
 _DISCOVERY_TOOL_NAMES = {
@@ -296,7 +296,9 @@ def read_tool_output(data_dir, run_id):
                 sources.append((info.st_mtime_ns, name, path))
         except (OSError, ValueError):
             continue
-    sources.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    # Keep the filtered discovery list visible beside raw diagnostics even
+    # after newer DNS/browser logs have consumed the recent-source slots.
+    sources.sort(key=lambda item: (item[1] == "discovery-hostnames.txt", item[0], item[1]), reverse=True)
     output, remaining = [], MAX_OUTPUT_BYTES
     for _, name, path in sources:
         if len(output) >= MAX_OUTPUT_SOURCES or remaining <= 0:
@@ -311,7 +313,12 @@ def read_tool_output(data_dir, run_id):
             # Removing terminal escapes/control codes can leave a nominal source empty.
             if not text.strip():
                 continue
-            output.append({"name": name, "text": text, "truncated": size > len(raw)})
+            entry = {"name": name, "text": text, "truncated": size > len(raw)}
+            if name == "discovery-hostnames.txt":
+                entry["description"] = "Filtered discovery hostnames within this project's roots. DNS resolution is checked separately; IPs, networks, ASNs and unrelated names are excluded."
+            elif re.fullmatch(r"(?:discovery/amass/)?amass-\d+\.txt", name):
+                entry["description"] = "Raw Amass asset graph for diagnosis. It includes IPs, networks and unrelated infrastructure; this file is not the hostname seed list or verified DNS inventory."
+            output.append(entry)
             remaining -= len(raw)
         except (OSError, ValueError):
             continue

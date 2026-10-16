@@ -15,7 +15,7 @@ from .assetfinder import Assetfinder
 from .discovery import Amass
 from .discovery_ensemble import CombinedDiscovery
 from .massdns import MassDnsResolver
-from .domains import parse_domains
+from .domains import normalize_domain, parse_domains
 from .progress import RunProgress
 from .store import Store
 
@@ -322,6 +322,30 @@ class MonitorService:
                 discovered = []
                 source_status["discovery"] = {"status": "skipped", "engine": engine,
                                               "detail": "Discovery explicitly disabled; retained seeds still checked."}
+            # Enforce the discovery boundary independently of each tool's
+            # parser. Raw Amass graph assets are never seeds or DNS evidence.
+            # This scope restriction does not apply to generated typo domains,
+            # which intentionally have names outside the client's roots.
+            accepted, invalid_names, outside_scope = set(), 0, 0
+            for value in discovered:
+                try:
+                    domain = normalize_domain(value)
+                except ValueError:
+                    invalid_names += 1
+                    continue
+                if not any(domain == root or domain.endswith("." + root) for root in project["roots"]):
+                    outside_scope += 1
+                    continue
+                accepted.add(domain)
+            discovered = sorted(accepted)
+            source_status["discovery"].update(accepted_hostnames=len(discovered),
+                rejected_invalid_names=invalid_names, rejected_out_of_scope=outside_scope)
+            (workdir / "discovery-hostnames.txt").write_text(
+                "".join(domain + "\n" for domain in discovered), encoding="utf-8")
+            report("discovery", f"Accepted {len(discovered):,} unique in-scope discovery hostnames; "
+                   "IP addresses and infrastructure assets cannot become seeds. Fresh DNS checks follow generation.",
+                   metrics={"accepted_hostnames": len(discovered), "rejected_invalid_names": invalid_names,
+                            "rejected_out_of_scope": outside_scope})
             seeds = sorted(set(project["roots"]) | set(old["seeds"]) | set(discovered))
             self._check_shutdown()
             # Generation is deterministic per seed/profile. The candidate and
@@ -347,13 +371,23 @@ class MonitorService:
                 generator_status = {"status": "ok", "detail": "All seeds were already generated with this profile; reused saved candidate inventory."}
             source_status["generator"] = {**generator_status, "generated_seeds": len(pending),
                                            "reused_seeds": len(seeds) - len(pending), "signature": signature}
-            (workdir / "generation.json").write_text(json.dumps({"signature": signature, "generated_seeds": pending,
-                "reused_seeds": [seed for seed in seeds if seed in cached]}, indent=2), encoding="utf-8")
             self._check_shutdown()
             # Never replace yesterday's search space with today's passive sample.
             candidates = sorted(set(old["candidates"]) | set(generated) | set(seeds))
+            (workdir / "generation.json").write_text(json.dumps({"signature": signature, "generated_seeds": pending,
+                "reused_seeds": [seed for seed in seeds if seed in cached], "seed_count": len(seeds),
+                "generated_candidates": len(generated), "retained_candidates": len(old["candidates"]),
+                "candidate_count": len(candidates), "candidate_limit": self.max_candidates}, indent=2), encoding="utf-8")
+            report("generation", f"Generation finished for {len(pending):,} hostname seeds; "
+                   f"{len(candidates):,} unique candidate hostnames await DNS checks.",
+                   current=len(pending), total=len(pending), metrics={"seed_count": len(seeds),
+                   "reused_seeds": len(seeds) - len(pending), "candidate_count": len(candidates),
+                   "candidate_limit": self.max_candidates})
             if len(candidates) > self.max_candidates:
-                raise RuntimeError(f"{len(candidates):,} candidates exceed the configured {self.max_candidates:,} limit. Increase --max-candidates; inventory was not truncated.")
+                raise RuntimeError(f"{len(candidates):,} candidate hostnames from {len(seeds):,} seeds exceed the configured "
+                    f"{self.max_candidates:,} limit. These are unverified typo candidates, not resolving-domain counts. "
+                    "Candidate DNS checks have not started. Review generation.json and discovery-hostnames.txt before raising "
+                    "--max-candidates (TYPO_MAX_CANDIDATES in Compose); saved inventory and baseline were preserved.")
             (workdir / "candidates.txt").write_text("\n".join(candidates) + "\n", encoding="utf-8")
             backend = getattr(self.resolver, "name", type(self.resolver).__name__)
             LOG.info("Run %s: DNS checks starting with %s for %d candidates; concurrency %d", run_id, backend, len(candidates), workers)

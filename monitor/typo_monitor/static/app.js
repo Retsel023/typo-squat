@@ -87,6 +87,15 @@ if (runProgress) {
         tools.set(output.name, tool);
       }
       tool.querySelector("[data-output-truncated]").textContent = output.truncated ? "Latest output · truncated" : "Recorded output";
+      let description = tool.querySelector("[data-output-description]");
+      if (!description) {
+        description = document.createElement("p");
+        description.className = "source-detail";
+        description.dataset.outputDescription = "";
+        tool.querySelector("summary").after(description);
+      }
+      description.textContent = text(output.description);
+      description.hidden = !output.description;
       const body = tool.querySelector("pre");
       preserveScroll(body, () => { body.textContent = text(output.text); });
     }

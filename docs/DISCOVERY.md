@@ -81,6 +81,16 @@ application's fresh A, AAAA and CNAME observations. Amass can make its own DNS
 queries during discovery; selecting its default discovery mode does not mean
 the tool makes no DNS requests.
 
+The service repeats hostname normalization and root-scope checks before any
+discovery result reaches generation, independently of each engine's parser.
+`discovery-hostnames.txt` lists the filtered, deduplicated discovery names and
+appears in the run's tool output. It is not a list of currently resolving
+domains; those are established by the subsequent fresh DNS checks. Raw Amass
+graph output is explicitly labelled as diagnostic context. IPv4 and IPv6
+addresses remain valid values in freshly verified A and AAAA records, but
+cannot become domain seeds. Generated typo candidates intentionally differ
+from the client's roots and are checked as separate hostnames.
+
 `--amass-config PATH` optionally supplies a provider-only v4 YAML configuration;
 `TYPO_AMASS_CONFIG` is its environment equivalent and is passed by both Compose
 profiles. Only this shape is accepted:

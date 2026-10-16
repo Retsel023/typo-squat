@@ -88,6 +88,21 @@ absent. All inventory names are queried again on every run; generation caching
 never substitutes for fresh DNS. The Python option uses the same saved setting
 as its domain-worker count. See [DNS backend details](../docs/DNS.md).
 
+The default `TYPO_MAX_CANDIDATES=250000` guard stops a run before candidate DNS
+checks if typo generation plus retained inventory exceeds that many unique
+hostnames. This count includes unverified candidates, not just domains that
+resolve. Inspect `discovery-hostnames.txt` in run output for filtered discovery
+names, and `generation.json` for the expansion counts. To allow up to a million
+candidates after reviewing that expansion, recreate with:
+
+```sh
+TYPO_MAX_CANDIDATES=1000000 TYPO_STANDALONE_PORT=5057 docker compose up --build -d --force-recreate monitor
+```
+
+The named data volume is retained. Keep the chosen value in this folder's
+`.env` file for later Compose invocations. Exceeding the limit preserves the
+previous accepted inventory and DNS baseline.
+
 Discovery defaults to `TYPO_DISCOVERY_ENGINE=combined`: Amass **4.2.0**,
 Subfinder with `-all`, and Assetfinder run concurrently. Their normalized,
 in-scope names are deduplicated before generation, with per-tool health and

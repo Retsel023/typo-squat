@@ -274,6 +274,16 @@ Other global options: `--workers` (default concurrency 24), `--dns-timeout`
 (default 4 seconds for a query's retry budget), `--massdns-timeout` (default
 3600 seconds for the entire bulk job), and `--max-candidates` (250,000).
 Exceeding the candidate limit fails a run rather than truncating coverage.
+Both Compose profiles accept `TYPO_MAX_CANDIDATES` for this limit, defaulting to
+`250000`; `--max-candidates` overrides that default in a native invocation.
+The count is the number of unique hostnames awaiting DNS checks, not the number
+of resolving domains. A discovery result can expand into thousands of typo
+candidates. Before failing this guard, the run records the seed/candidate counts
+in `generation.json`; the saved inventory and DNS baseline remain unchanged.
+`discovery-hostnames.txt` in the live output shows the filtered in-scope names
+from discovery, separately from Amass's raw asset graph. IPs, networks, ASNs and
+unrelated infrastructure cannot become discovery seeds; A/AAAA record values
+still contain their legitimate IPv4/IPv6 addresses after fresh DNS validation.
 AIL generation has a 15-minute timeout; each root's discovery call defaults
 to a 10-minute timeout. The current discovery/streaming changes have not been built
 or tested here.

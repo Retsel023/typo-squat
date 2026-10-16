@@ -40,7 +40,8 @@ def parser():
     p.add_argument("--workers", type=int, default=os.environ.get("TYPO_DNS_WORKERS", "24"),
                    help="Default DNS concurrency, 1–128 (TYPO_DNS_WORKERS, otherwise 24); client settings override")
     p.add_argument("--dns-timeout", type=float, default=4)
-    p.add_argument("--max-candidates", type=int, default=250_000)
+    p.add_argument("--max-candidates", type=int, default=os.environ.get("TYPO_MAX_CANDIDATES", "250000"),
+                   help="Candidate hostname limit before DNS checks (TYPO_MAX_CANDIDATES, otherwise 250000)")
     p.add_argument("--no-screenshots", action="store_true", help="Explicitly skip browser captures; DNS monitoring continues")
     p.add_argument("--gowitness-path", help="Path to Gowitness 3.2.2")
     p.add_argument("--chrome-path", help="Path to Chrome/Chromium for captures")
