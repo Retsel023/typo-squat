@@ -3,6 +3,7 @@ import base64
 import io
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -143,6 +144,21 @@ class WebTests(unittest.TestCase):
 
     def capture_url(self, capture):
         return f"/captures/{capture['run_id']}/{capture['domain']}/{capture['scheme']}"
+
+    def project_links(self, response):
+        class ProjectLinks(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.links = {}
+
+            def handle_starttag(self, tag, attributes):
+                attributes = dict(attributes)
+                if tag == "a" and "project-nav-link" in attributes.get("class", "").split():
+                    self.links[attributes["href"]] = attributes.get("aria-current") == "page"
+
+        parser = ProjectLinks()
+        parser.feed(response.get_data(as_text=True))
+        return parser.links
 
     def test_empty_dashboard_and_security_headers(self):
         response = self.client.get("/")
@@ -626,6 +642,86 @@ class WebTests(unittest.TestCase):
             page = self.client.get(f"/runs/{run['id']}")
         self.assertEqual(page.status_code, 200)
         self.assertNotIn(b"AI handoff preview", page.data)
+
+    def test_new_project_link_opens_a_dedicated_form_from_any_project(self):
+        project = self.project("Clazing")
+        project_page = self.client.get(f"/projects/{project['id']}")
+        self.assertIn(b'href="/projects/new"', project_page.data)
+        self.assertNotIn(b'href="/#new-project"', project_page.data)
+        form_page = self.client.get("/projects/new")
+        self.assertEqual(form_page.status_code, 200)
+        self.assertIn(b"Create a project", form_page.data)
+        self.assertIn(b'action="/projects"', form_page.data)
+        self.assertIn(b'name="csrf_token"', form_page.data)
+        self.assertIn(b'href="/projects/new" aria-current="page"', form_page.data)
+        self.assertEqual(self.project_links(form_page), {f"/projects/{project['id']}": False})
+
+    def test_sidebar_lists_and_escapes_all_projects_with_current_context_highlight(self):
+        first = self.project("Clazing")
+        second = self.project('<script>Other client</script>')
+        self.service.store.domains[first["id"]] = [{"domain": "clazlng.example", "status": "resolved"}]
+        run = self.service.submit_scan(first["id"])
+        pages = [self.client.get(f"/projects/{first['id']}"), self.client.get(f"/runs/{run['id']}"),
+                 self.client.get(f"/projects/{first['id']}/candidates/clazlng.example")]
+        expected = {f"/projects/{first['id']}": True, f"/projects/{second['id']}": False}
+        for page in pages:
+            self.assertEqual(page.status_code, 200)
+            self.assertEqual(self.project_links(page), expected)
+            self.assertIn(b"&lt;script&gt;Other client&lt;/script&gt;", page.data)
+            self.assertNotIn(b"<script>Other client</script>", page.data)
+        overview = self.client.get("/")
+        self.assertEqual(self.project_links(overview), {key: False for key in expected})
+        self.assertIn(b'href="/" aria-current="page"', overview.data)
+        self.assertIn(b"Clazing", overview.data)
+        self.assertIn(b"Other client", overview.data)
+
+    def test_selecting_one_client_keeps_real_store_findings_history_and_exports_scoped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(directory)
+            self.service.store = store
+            clazing = store.create_project("Clazing", ["clazing.example"])
+            other = store.create_project("Other client", ["other.example"])
+
+            def finish(project, candidate, address):
+                run = store.start_run(project["id"])
+                return store.finish_run(run["id"], seeds=project["roots"],
+                    candidates=[*project["roots"], candidate],
+                    observations={domain: {"status": "resolved", "records": [["A", address]]}
+                                  for domain in [*project["roots"], candidate]},
+                    source_status={"dns": {"status": "ok"}}, provenance={candidate: project["roots"]})
+
+            first = finish(clazing, "clazlng.example", "192.0.2.1")
+            latest = finish(clazing, "clazlng.example", "192.0.2.2")
+            unrelated = finish(other, "other-typo.example", "192.0.2.3")
+            response = self.client.get(f"/projects/{clazing['id']}")
+            self.assertEqual(response.status_code, 200)
+            main = response.get_data(as_text=True).split('<main ', 1)[1].split('</main>', 1)[0]
+            self.assertIn('<span class="domain-name">clazlng.example</span>', main)
+            self.assertNotIn('<span class="domain-name">other-typo.example</span>', main)
+            self.assertIn(f'/runs/{first["id"]}', main)
+            self.assertIn(f'/runs/{latest["id"]}', main)
+            self.assertNotIn(f'/runs/{unrelated["id"]}', main)
+            self.assertIn(f'action="/projects/{clazing["id"]}/scan"', main)
+            self.assertNotIn(f'action="/projects/{other["id"]}/scan"', main)
+            self.assertEqual(self.project_links(response), {f'/projects/{clazing["id"]}': True, f'/projects/{other["id"]}': False})
+            exported = self.client.get(f"/projects/{clazing['id']}/export.csv")
+            domains = [row["domain"] for row in csv.DictReader(io.StringIO(exported.get_data(as_text=True)))]
+            self.assertEqual(domains, ["clazlng.example"])
+            self.assertEqual(self.client.get(f"/projects/{clazing['id']}/candidates/other-typo.example").status_code, 404)
+            other_run = self.client.get(f"/runs/{unrelated['id']}")
+            self.assertEqual(self.project_links(other_run), {f'/projects/{clazing["id"]}': False, f'/projects/{other["id"]}': True})
+            self.assertNotIn(b"clazlng.example", other_run.data)
+
+    def test_scan_submission_targets_the_selected_client_only(self):
+        clazing = self.project("Clazing")
+        other = self.project("Other client")
+        token = self.token()
+        response = self.client.post(f"/projects/{clazing['id']}/scan", data={"csrf_token": token})
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(self.service.submissions, [clazing["id"]])
+        self.assertEqual(self.service.store.list_runs(other["id"]), [])
+        run_page = self.client.get(response.headers["Location"])
+        self.assertEqual(self.project_links(run_page), {f'/projects/{clazing["id"]}': True, f'/projects/{other["id"]}': False})
 
 
 if __name__ == "__main__":

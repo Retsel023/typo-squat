@@ -2,4 +2,4 @@
 {% from 'macros.html' import create_form with context %}
 {% block title %}Create a project{% endblock %}
 {% block breadcrumb %}New project{% endblock %}
-{% block content %}<div class="page-heading"><div><div class="eyebrow">A NEW INVENTORY</div><h1>Create a project</h1><p>Add your root domains to begin monitoring.</p></div></div><section class="panel form-panel">{{ create_form(form) }}</section>{% endblock %}
+{% block content %}<div class="page-heading"><div><a class="back-link" href="{{ url_for('dashboard') }}">← Workspace overview</a><div class="eyebrow">A NEW INVENTORY</div><h1>Create a project</h1><p>Keep each client’s domains, captures and scan history together.</p></div></div><section class="panel form-panel">{{ create_form(form) }}</section>{% endblock %}

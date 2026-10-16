@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 from flask import (
-    Flask, Response, abort, flash, redirect, render_template, request, send_file, session, url_for,
+    Flask, Response, abort, flash, g, redirect, render_template, request, send_file, session, url_for,
 )
 
 from .domains import normalize_domain, parse_domains
@@ -125,11 +125,17 @@ def create_app(service):
                                              else "no-store")
         return response
 
+    def navigation_projects():
+        if "navigation_projects" not in g:
+            g.navigation_projects = service.store.list_projects()
+        return g.navigation_projects
+
     @app.context_processor
     def common_context():
         return {"csrf_token": session.get("csrf_token", ""), "domain_labels": DOMAIN_LABELS,
                 "event_labels": EVENT_LABELS, "run_labels": RUN_LABELS,
-                "interval_hours": getattr(service, "interval_hours", 0)}
+                "interval_hours": getattr(service, "interval_hours", 0),
+                "navigation_projects": navigation_projects()}
 
     def project_or_404(project_id):
         try:
@@ -173,7 +179,7 @@ def create_app(service):
     def dashboard():
         projects = []
         all_counts = {"total": 0, **{status: 0 for status in DOMAIN_LABELS}}
-        for item in service.store.list_projects():
+        for item in navigation_projects():
             project = dict(item)
             project["counts"] = service.store.domain_counts(project["id"])
             for key in all_counts:
@@ -186,6 +192,10 @@ def create_app(service):
     @app.get("/health")
     def health():
         return {"status": "ok"}
+
+    @app.get("/projects/new")
+    def new_project():
+        return render_template("create.html", form={}, page="new")
 
     @app.post("/projects")
     def create_project():

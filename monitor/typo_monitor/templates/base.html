@@ -13,9 +13,13 @@
   <aside class="sidebar" aria-label="Primary navigation">
     <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-mark" aria-hidden="true">t<span>·</span></span><span>typo<span class="brand-light">watch</span></span></a>
     <div class="workspace-label">MONITORING WORKSPACE</div>
-    <nav>
+    <nav class="workspace-navigation" aria-label="Workspace">
       <a class="nav-link {% if page == 'overview' %}active{% endif %}" href="{{ url_for('dashboard') }}"{% if page == 'overview' %} aria-current="page"{% endif %}><span aria-hidden="true">▦</span> Overview</a>
-      <a class="nav-link {% if page == 'new' %}active{% endif %}" href="{{ url_for('dashboard') }}#new-project"><span aria-hidden="true">＋</span> New project</a>
+      <a class="nav-link {% if page == 'new' %}active{% endif %}" href="{{ url_for('new_project') }}"{% if page == 'new' %} aria-current="page"{% endif %}><span aria-hidden="true">＋</span> New project</a>
+    </nav>
+    <nav class="project-navigation" aria-label="Client projects">
+      <div class="project-nav-heading"><span>PROJECTS</span><span>{{ navigation_projects|length }}</span></div>
+      <div class="project-nav-list">{% for item in navigation_projects %}<a class="project-nav-link{% if project is defined and project.id == item.id %} active{% endif %}" href="{{ url_for('project_detail', project_id=item.id) }}" title="{{ item.name }}"{% if project is defined and project.id == item.id %} aria-current="page"{% endif %}><span class="project-nav-avatar" aria-hidden="true">{{ item.name[:1]|upper }}</span><span class="project-nav-name">{{ item.name }}</span>{% if project is defined and project.id == item.id %}<span class="project-nav-marker" aria-hidden="true">•</span>{% endif %}</a>{% else %}<p class="project-nav-empty">Create a project for each client to keep findings and scan history together.</p>{% endfor %}</div>
     </nav>
     <div class="sidebar-note"><span class="status-dot"></span><strong>Your data, your server</strong><p>Persistent inventory.<br>Changes backed by evidence.</p></div>
     <div class="sidebar-footer">DOMAIN MONITORING <span>v3</span></div>

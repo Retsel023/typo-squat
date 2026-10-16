@@ -183,6 +183,9 @@ current inventory with last-known records and uncertainty; it is not a baseline.
 The new interface includes searchable/paginated inventory, source health, run
 history, before/after records, and CSV. The default review view shows only
 currently resolving typo candidates and excludes original roots/subdomains.
+Client projects appear in the sidebar throughout the application. Selecting a
+client opens only its findings, scan history and exports; Overview summarizes
+the full workspace. **New project** opens a dedicated creation page.
 Source groups trace each candidate back to the input domain or subdomain that
 generated it; candidates can belong to multiple groups. Full inventory and
 uncertain/absent results remain available through the filters and are rechecked
