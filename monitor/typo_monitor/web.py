@@ -195,7 +195,7 @@ def create_app(service):
         if not value:
             return None
         if not value.isascii() or not value.isdigit() or len(value) > 3 or not 1 <= int(value) <= 128:
-            raise ValueError("DNS workers must be a whole number from 1 to 128, or blank for the server default.")
+            raise ValueError("DNS concurrency must be a whole number from 1 to 128, or blank for the server default.")
         return int(value)
 
     @app.context_processor

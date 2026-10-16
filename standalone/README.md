@@ -2,9 +2,9 @@
 
 This folder runs the current application without n8n or local AI. Docker builds
 from the shared [`monitor/Dockerfile`](../monitor/Dockerfile), including Python,
-Subfinder, Gowitness **3.2.2**, Chromium and the locked Python dependencies. You
-need Docker Engine and the Compose plugin on the host; you do not need to install
-Python, Go, Chromium or scanning tools there. Keep this folder beside `monitor/`
+Amass **4.2.0**, MassDNS **1.1.0**, Subfinder, Gowitness **3.2.2**, Chromium and the locked Python
+dependencies. You need Docker Engine and the Compose plugin on the host; you do
+not need to install Python, Go, Chromium or scanning tools there. Keep this folder beside `monitor/`
 in the repository: it deliberately shares that source instead of copying it.
 
 The standalone profile has its own persistent named volume for SQLite, scan
@@ -66,10 +66,10 @@ schedule enabled. Stopping restarts its interval from the cancellation time,
 preventing an overdue scan from immediately restarting. Disable the schedule
 separately when desired. Simulated demo projects are never automatically scanned.
 
-Choose **DNS workers** when creating a client, or save it on the client's page
-before starting a scan. Use 20 for up to 20 parallel domain checks; the supported
+Choose **DNS concurrency** when creating a client, or save it on the client's page
+before starting a scan. Use 20 for up to 20 simultaneous DNS questions with MassDNS; the supported
 range is 1–128. A blank setting follows the server default of 24. This setting
-also controls the subsequent DNS parking checks; browser captures have a
+also controls the subsequent DNS parking and website checks; browser captures have a
 separate worker limit. Each queued scan keeps its chosen count, so editing a
 client affects scans queued afterward. The run page shows the count used.
 
@@ -79,11 +79,30 @@ To change the Docker server default for clients that inherit it:
 TYPO_DNS_WORKERS=20 TYPO_STANDALONE_PORT=5057 docker compose up --build -d
 ```
 
-Saved client overrides still take precedence. The current backend uses Python
-DNS, including A, AAAA and CNAME observations, rather than invoking the legacy
-MassDNS command. DNS work is refilled as checks finish, keeping available
-workers busy without waiting for a whole batch. All inventory names are queried
-again on every run; generation caching never substitutes for fresh DNS.
+Saved client overrides still take precedence. MassDNS is the default lookup
+backend (`TYPO_DNS_BACKEND=massdns`); select `TYPO_DNS_BACKEND=dnspython` for the
+Python implementation. MassDNS performs bulk A, AAAA and CNAME queries with
+bounded concurrency. Missing replies and failed queries remain uncertain, not
+absent. All inventory names are queried again on every run; generation caching
+never substitutes for fresh DNS. The Python option uses the same saved setting
+as its domain-worker count. See [DNS backend details](../docs/DNS.md).
+
+Amass **4.2.0** is the default discovery engine. This compatibility pin uses a
+self-contained enumeration command; Amass v5's separate engine lifecycle needs
+a different integration. To explicitly select Subfinder, start
+with `TYPO_DISCOVERY_ENGINE=subfinder`; there is no automatic fallback between
+engines. `TYPO_DISCOVERY_TIMEOUT` sets the per-root limit in seconds (default
+600). For example:
+
+```sh
+TYPO_DISCOVERY_ENGINE=subfinder TYPO_DISCOVERY_TIMEOUT=600 TYPO_STANDALONE_PORT=5057 docker compose up --build -d
+```
+
+The selected tool's failure or timeout is visible in source health. Saved seeds
+and candidates are retained, and every saved candidate is still checked by DNS.
+Existing scan history continues to show the discovery engine used at the time.
+See the [discovery guide](../docs/DISCOVERY.md) for supported tool versions and
+native options.
 
 Before opening Chromium, each resolving domain receives lightweight HTTP and
 HTTPS checks on ports 80 and 443. Only responding endpoints are passed to
@@ -125,10 +144,14 @@ capture has started, inspect its log without installing host tools:
 docker compose exec monitor tail -n 50 /data/runs/RUN_UUID/gowitness.log
 ```
 
-Generation attempts also retain `generator.log`; discovery retains per-root
-stderr logs. A reused generation cache does not launch AIL or create a new AIL
-log. For native runs, the same application stage messages appear in the terminal
-and tool logs live under `standalone/data/runs/RUN_UUID/`.
+Generation attempts also retain `generator.log`; Amass retains per-root
+`amass-N.txt` typed asset/relationship output, `amass-N.stdout.log`,
+`amass-N.stderr.log`, `amass-N.engine.log` and `amass-db-N/` working data. Those
+discovery relationships are not current DNS evidence; DNS is checked afresh.
+Explicit Subfinder runs retain their own output and stderr. A reused generation
+cache does not launch AIL or create a new AIL log. For native runs, the same
+application stage messages appear in the terminal and tool logs live under
+`standalone/data/runs/RUN_UUID/`.
 
 ## Inspect the current progress with local examples
 
@@ -212,8 +235,14 @@ folders; these are distinct from Docker's named volume. It disables the optional
 automation API even if a token exists in your shell. `setup` creates a local
 virtual environment and installs the locked Python dependencies. It does not
 install system packages or scanner binaries. For real native screenshots,
-install Gowitness **3.2.2** and Chrome/Chromium; Subfinder provides optional
-discovery. The [application guide](../monitor/README.md) documents these tools.
+install Gowitness **3.2.2** and Chrome/Chromium. Install MassDNS **1.1.0**
+for bulk lookups, or choose `--dns-backend dnspython`. Install Amass **4.2.0**
+for default discovery, or explicitly choose Subfinder with
+`--discovery-engine subfinder`. `--amass-path` supplies a native Amass binary
+path, `--amass-config` supplies optional provider-only v4 YAML configuration, and
+`--discovery-timeout` changes the per-root seconds limit. Unsupported Amass
+versions are rejected visibly. The
+[application guide](../monitor/README.md) documents these tools.
 
 ```sh
 python3 standalone/run.py doctor
@@ -232,6 +261,6 @@ Global options precede the command, for example:
 python3 standalone/run.py --gowitness-path /path/to/gowitness --chrome-path /path/to/chromium serve --port 5055
 ```
 
-The Docker configuration reuses the maintained image definition. The image has
-been built successfully, and its bundled scanner tools passed `doctor` in a
-disposable container using the read-only application filesystem.
+The Docker configuration reuses the maintained image definition. The current
+Amass/MassDNS changes have not been built or run here; build the updated image and check
+`doctor` before relying on its discovery results.

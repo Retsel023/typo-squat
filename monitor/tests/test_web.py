@@ -194,7 +194,7 @@ class WebTests(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Your first project starts here", response.data)
-        self.assertIn(b"Subfinder is optional", response.data)
+        self.assertIn(b"Every scan rechecks saved domains", response.data)
         self.assertIn(b"Not installed", response.data)
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
         self.assertIn("form-action 'self'", response.headers["Content-Security-Policy"])
@@ -887,10 +887,10 @@ class WebTests(unittest.TestCase):
         self.assertEqual(project["dns_workers"], 20)
         self.assertIsInstance(project["dns_workers"], int)
         self.assertEqual(self.service.submissions, [])
-        self.assertIn(b"20 workers", self.client.get(response.headers["Location"]).data)
+        self.assertIn(b"20 concurrent", self.client.get(response.headers["Location"]).data)
         run = self.service.submit_scan(project["id"])
         self.assertEqual(run["dns_workers"], 20)
-        self.assertIn(b'DNS workers for this scan</span><strong>20</strong>', self.client.get(f"/runs/{run['id']}").data)
+        self.assertIn(b'DNS concurrency for this scan</span><strong>20</strong>', self.client.get(f"/runs/{run['id']}").data)
 
     def test_creation_workers_blank_inherits_and_invalid_values_do_not_create_projects(self):
         token = self.token()
@@ -917,8 +917,8 @@ class WebTests(unittest.TestCase):
         self.assertIsNone(self.service.store.projects[other["id"]]["dns_workers"])
         self.assertEqual(active["dns_workers"], 24)
         page = self.client.get(f"/projects/{clazing['id']}")
-        self.assertIn(b"20 workers", page.data)
-        self.assertIn(b"This active scan uses 24 workers", page.data)
+        self.assertIn(b"20 concurrent", page.data)
+        self.assertIn(b"This active scan uses DNS concurrency 24", page.data)
         self.assertIn(b"Queued and running scans keep their original setting", page.data)
         self.assertEqual(self.service.submissions, [clazing["id"]])
         active["status"] = "completed"
@@ -939,7 +939,7 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.client.post(route, data={"csrf_token": token, "dns_workers": ""}).status_code, 303)
         self.assertIsNone(self.service.store.projects[project["id"]]["dns_workers"])
         page = self.client.get(f"/projects/{project['id']}")
-        self.assertIn(b"24 workers", page.data)
+        self.assertIn(b"24 concurrent", page.data)
         self.assertIn(b'placeholder="Server default (24)"', page.data)
         run = self.service.submit_scan(project["id"])
         run.update(status="completed", source_status={"demo": {"status": "ok"}})
@@ -952,15 +952,15 @@ class WebTests(unittest.TestCase):
         self.service.resolver.workers = 32
         project = self.project()
         self.assertIn(b'placeholder="Server default (32)"', self.client.get("/projects/new").data)
-        self.assertIn(b"32 workers", self.client.get(f"/projects/{project['id']}").data)
+        self.assertIn(b"32 concurrent", self.client.get(f"/projects/{project['id']}").data)
         run = self.service.submit_scan(project["id"])
         self.service.store.set_dns_workers(project["id"], 20)
         run["status"] = "completed"
         page = self.client.get(f"/runs/{run['id']}")
-        self.assertIn(b'DNS workers for this scan</span><strong>32</strong>', page.data)
+        self.assertIn(b'DNS concurrency for this scan</span><strong>32</strong>', page.data)
         run["dns_workers"] = None  # Historical captures predate the setting.
         page = self.client.get(f"/runs/{run['id']}")
-        self.assertIn(b'DNS workers for this scan</span><strong>Not recorded</strong>', page.data)
+        self.assertIn(b'DNS concurrency for this scan</span><strong>Not recorded</strong>', page.data)
 
     def test_server_default_placeholder_does_not_follow_active_run_worker_override(self):
         self.service.dns_workers = 24

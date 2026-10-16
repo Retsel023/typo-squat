@@ -1,12 +1,16 @@
 # Typo Watch
 
-Linux/server monitoring for typo domains, using AIL permutations and optional
-Subfinder discovery. The current application lives in
+Linux/server monitoring for typo domains, using Amass discovery, cached AIL
+permutations and MassDNS bulk lookups by default. Subfinder discovery and
+dnspython lookups are explicit alternatives. The current application lives in
 [monitor](monitor/README.md).
 
 V3 now stores observations and an accumulating candidate inventory in SQLite.
 Discovery misses do not remove candidates, DNS failures remain uncertain, and
 changes compare normalized DNS record sets instead of spreadsheet positions.
+The selected discovery engine never falls back automatically to another tool.
+Every saved candidate still receives fresh DNS checks on each scan. See
+[discovery settings](docs/DISCOVERY.md) for selection and time limits.
 
 The Flask interface provides projects, a screenshot gallery, previous/current
 visual review, inventory search, scan history, source health, and CSV export.

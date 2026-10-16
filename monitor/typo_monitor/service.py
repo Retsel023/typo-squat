@@ -10,7 +10,9 @@ import math
 import threading
 import time
 
-from .adapters import AilGenerator, DnsResolver, Subfinder
+from .adapters import AilGenerator, DnsResolver
+from .discovery import Amass
+from .massdns import MassDnsResolver
 from .domains import parse_domains
 from .progress import RunProgress
 from .store import Store
@@ -89,12 +91,12 @@ class MonitorService:
             self._instance.close()
             raise
         self.discovery = discovery
-        self.resolver = resolver or DnsResolver()
+        self.resolver = resolver or MassDnsResolver()
         # Adapters are reused by the single scan worker. Keep the server default
         # separate from whichever client's value was applied to the last run.
         self.dns_workers = default_workers
         self.generator = generator or AilGenerator()
-        self.discoverer = discoverer or Subfinder()
+        self.discoverer = discoverer or Amass()
         if parking_classifier is None and isinstance(self.resolver, DnsResolver):
             from .parking import ParkingClassifier
             parking_classifier = ParkingClassifier(nameservers=self.resolver.nameservers)
@@ -144,12 +146,21 @@ class MonitorService:
 
     def tool_status(self):
         tools = {}
-        for label, package in (("AIL generator", "ail-typo-squatting"), ("DNS resolver", "dnspython")):
+        for label, package in (("AIL generator", "ail-typo-squatting"), ("DNS support", "dnspython")):
             try:
                 tools[label] = {"available": True, "detail": metadata.version(package)}
             except metadata.PackageNotFoundError:
                 tools[label] = {"available": False, "detail": f"Install requirements.txt ({package})."}
-        tools["Subfinder"] = {"available": bool(getattr(self.discoverer, "executable", None)), "detail": "Passive discovery" if self.discovery else "Discovery disabled for this server"}
+        backend = getattr(self.resolver, "name", type(self.resolver).__name__)
+        tools[f"DNS lookups · {backend}"] = {
+            "available": bool(getattr(self.resolver, "executable", None)) if isinstance(self.resolver, MassDnsResolver) else True,
+            "detail": ("Requires the bundled MassDNS JSON completeness patch. " if isinstance(self.resolver, MassDnsResolver) else "")
+                      + "Fresh A, AAAA and CNAME queries; no automatic backend fallback."}
+        engine = getattr(self.discoverer, "name", type(self.discoverer).__name__)
+        version = getattr(self.discoverer, "version", None)
+        detail = f"Subdomain discovery{(' · requires ' + version) if version else ''}"
+        tools[engine] = {"available": bool(getattr(self.discoverer, "executable", None)),
+                         "detail": detail if self.discovery else "Discovery disabled for this server"}
         if self.capture_enabled:
             executable = bool(getattr(self.capturer, "executable", None))
             browser = bool(getattr(self.capturer, "chrome_path", None))
@@ -289,19 +300,23 @@ class MonitorService:
                 adapter.cancel_event = signal
                 adapter.run_id = run_id
                 adapter.progress_callback = report
+                adapter.workdir = workdir
         try:
             self._check_shutdown()
             workdir.mkdir(parents=True)
             project = self.store.get_project(project_id)
             old = self.store.inventory(project_id)
-            report("discovery", f"Discovering subdomains for {len(project['roots'])} root domains.",
+            engine = getattr(self.discoverer, "name", type(self.discoverer).__name__)
+            report("discovery", f"Discovering subdomains with {engine} for {len(project['roots'])} root domains.",
                    current=0, total=len(project["roots"]))
-            LOG.info("Run %s: discovery starting for %d roots", run_id, len(project["roots"]))
+            LOG.info("Run %s: discovery starting with %s for %d roots", run_id, engine, len(project["roots"]))
             if self.discovery:
                 discovered, source_status["discovery"] = self.discoverer.discover(project["roots"], workdir)
+                source_status["discovery"].setdefault("engine", engine)
             else:
                 discovered = []
-                source_status["discovery"] = {"status": "skipped", "detail": "Discovery explicitly disabled; retained seeds still checked."}
+                source_status["discovery"] = {"status": "skipped", "engine": engine,
+                                              "detail": "Discovery explicitly disabled; retained seeds still checked."}
             seeds = sorted(set(project["roots"]) | set(old["seeds"]) | set(discovered))
             self._check_shutdown()
             # Generation is deterministic per seed/profile. The candidate and
@@ -335,14 +350,24 @@ class MonitorService:
             if len(candidates) > self.max_candidates:
                 raise RuntimeError(f"{len(candidates):,} candidates exceed the configured {self.max_candidates:,} limit. Increase --max-candidates; inventory was not truncated.")
             (workdir / "candidates.txt").write_text("\n".join(candidates) + "\n", encoding="utf-8")
-            LOG.info("Run %s: DNS checks starting for %d candidates with %d workers", run_id, len(candidates), workers)
-            report("dns", f"Checking {len(candidates):,} domains with {workers} DNS workers.",
+            backend = getattr(self.resolver, "name", type(self.resolver).__name__)
+            LOG.info("Run %s: DNS checks starting with %s for %d candidates; concurrency %d", run_id, backend, len(candidates), workers)
+            report("dns", f"Checking {len(candidates):,} domains with {backend}; DNS concurrency {workers}.",
                    current=0, total=len(candidates), metrics={"resolved": 0, "negative": 0, "uncertain": 0})
             observations = self.resolver.resolve(candidates)
             self._check_shutdown()
             if set(observations) != set(candidates):
                 raise RuntimeError("Resolver did not return an observation for every candidate; baseline unchanged.")
-            source_status["dns"] = {"status": "partial" if any(o["status"] == "unknown" for o in observations.values()) else "ok", "detail": "A, AAAA and CNAME; recursive DNS observations, not registration checks.", "nameservers": getattr(self.resolver, "nameservers", None) or "system", "workers": getattr(self.resolver, "workers", None)}
+            dns_error = getattr(self.resolver, "last_error", None)
+            source_status["dns"] = {
+                "status": "partial" if dns_error or any(o["status"] == "unknown" for o in observations.values()) else "ok",
+                "engine": backend,
+                "detail": "Fresh A, AAAA and CNAME; recursive DNS observations, not registration checks."
+                          + (f" {dns_error}" if dns_error else ""),
+                "nameservers": getattr(self.resolver, "nameservers", None) or "system",
+                "workers": getattr(self.resolver, "workers", None)}
+            if getattr(self.resolver, "version", None):
+                source_status["dns"]["version"] = self.resolver.version
             if self.parking_classifier:
                 LOG.info("Run %s: parking checks starting", run_id)
                 report("parking", "Checking resolving domains for known DNS parking signals.")

@@ -2,6 +2,11 @@
 
 Reviewed on 16 October 2026. Scope: static inspection of legacy `ail-typo-squatting V-3` at Git revision `eff48ca`, whose application, worker, and report writer are generated inside its installers. No installer, external scan, DNS enumeration, or screenshot capture was run. References below use that revision's source line numbers, not generated-file line numbers. The Python implementation and replacement Dockerfile are separate changes.
 
+The current application defaults to Amass discovery and MassDNS bulk lookups,
+with explicit Subfinder/dnspython alternatives. See the
+[discovery guide](DISCOVERY.md) and [DNS guide](DNS.md) for the current engines;
+the findings and implementation choices below describe the earlier audit.
+
 ## Why the changelog is unreliable
 
 The main problem is changing scan coverage, not Docker. V3 moves the previous results aside, discovers subdomains again, and generates candidates from only the current discovery output (`install.sh:69–100`). If yesterday's `login.example.com` is absent from today's passive discovery, all its generated candidates disappear from today's input. Their absence says nothing about their current DNS state.

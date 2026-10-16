@@ -19,10 +19,24 @@ def _stop_server(_signum, _frame):
 def parser():
     p = argparse.ArgumentParser(description="Persistent typo-domain monitoring")
     p.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent.parent / "data")
-    p.add_argument("--no-discovery", action="store_true", help="Explicitly skip Subfinder, retaining known seeds")
+    p.add_argument("--no-discovery", action="store_true", help="Explicitly skip subdomain discovery, retaining known seeds")
+    p.add_argument("--discovery-engine", choices=["amass", "subfinder"],
+                   default=os.environ.get("TYPO_DISCOVERY_ENGINE", "amass"),
+                   help="Subdomain discovery engine (TYPO_DISCOVERY_ENGINE, otherwise amass); no automatic fallback")
+    p.add_argument("--discovery-timeout", type=float, default=os.environ.get("TYPO_DISCOVERY_TIMEOUT", "600"),
+                   help="Per-root discovery wall-clock limit in seconds (TYPO_DISCOVERY_TIMEOUT, otherwise 600)")
+    p.add_argument("--amass-path", help="Path to Amass 4.2.0")
+    p.add_argument("--amass-config", type=Path, default=os.environ.get("TYPO_AMASS_CONFIG") or None,
+                   help="Optional provider-only Amass 4.2 YAML configuration (TYPO_AMASS_CONFIG)")
     p.add_argument("--resolver", action="append", help="Recursive DNS server IP; repeat for multiple servers")
+    p.add_argument("--dns-backend", choices=["massdns", "dnspython"],
+                   default=os.environ.get("TYPO_DNS_BACKEND", "massdns"),
+                   help="DNS lookup backend (TYPO_DNS_BACKEND, otherwise massdns); no automatic fallback")
+    p.add_argument("--massdns-path", help="Path to the MassDNS executable")
+    p.add_argument("--massdns-timeout", type=float, default=3600,
+                   help="MassDNS deadline for the entire bulk DNS job, in seconds")
     p.add_argument("--workers", type=int, default=os.environ.get("TYPO_DNS_WORKERS", "24"),
-                   help="Default parallel DNS workers, 1–128 (TYPO_DNS_WORKERS, otherwise 24); client settings override")
+                   help="Default DNS concurrency, 1–128 (TYPO_DNS_WORKERS, otherwise 24); client settings override")
     p.add_argument("--dns-timeout", type=float, default=4)
     p.add_argument("--max-candidates", type=int, default=250_000)
     p.add_argument("--no-screenshots", action="store_true", help="Explicitly skip browser captures; DNS monitoring continues")
@@ -85,14 +99,25 @@ def main(argv=None):
                 print(path.resolve())
             print(f"{report['summary']['selected_pairs']} eligible pairs; this batch has {report['batch']['pairs']} pairs and {report['batch']['inline_image_bytes']} inline image bytes. External requests: 0.")
             return 0
-        from .adapters import DnsResolver
+        from .adapters import DnsResolver, Subfinder
+        from .discovery import Amass
+        from .massdns import MassDnsResolver
         from .screenshots import GowitnessCapture
         capturer = None if args.no_screenshots else GowitnessCapture(
             executable=args.gowitness_path, chrome_path=args.chrome_path,
             timeout=args.capture_timeout, threads=args.capture_workers, driver=args.capture_driver,
             probe_timeout=args.web_timeout)
-        with MonitorService(args.data_dir, discovery=not args.no_discovery,
-                            resolver=DnsResolver(args.resolver, args.dns_timeout, args.workers),
+        if args.discovery_engine not in {"amass", "subfinder"}:
+            raise ValueError("TYPO_DISCOVERY_ENGINE must be amass or subfinder.")
+        discoverer = (Amass(args.amass_path, timeout=args.discovery_timeout, config=args.amass_config)
+                      if args.discovery_engine == "amass" else Subfinder(timeout=args.discovery_timeout))
+        if args.dns_backend not in {"massdns", "dnspython"}:
+            raise ValueError("TYPO_DNS_BACKEND must be massdns or dnspython.")
+        resolver = (MassDnsResolver(args.resolver, args.dns_timeout, args.workers,
+                                   executable=args.massdns_path, timeout=args.massdns_timeout)
+                    if args.dns_backend == "massdns" else DnsResolver(args.resolver, args.dns_timeout, args.workers))
+        with MonitorService(args.data_dir, discovery=not args.no_discovery, discoverer=discoverer,
+                            resolver=resolver,
                             max_candidates=args.max_candidates,
                             capture=not args.no_screenshots, capturer=capturer,
                             interval_hours=getattr(args, "interval_hours", 0), scheduling=args.command == "serve") as service:

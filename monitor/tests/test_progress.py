@@ -162,13 +162,35 @@ class ProgressTests(unittest.TestCase):
         self.output("gowitness.log", "capture complete\n")
         self.output("subfinder-12.stderr.log", "diagnostic\n")
         self.output("subfinder-12.txt", "www.example.org\n")
-        for forbidden in ("input-candidates.txt", "generated-12.txt", "subfinder-latest.txt", "private.log"):
+        self.output("amass-12.txt", "portal.example.org\n")
+        self.output("amass-12.stdout.log", "discovery output\n")
+        self.output("amass-12.stderr.log", "discovery diagnostic\n")
+        for forbidden in ("input-candidates.txt", "generated-12.txt", "subfinder-latest.txt", "amass-latest.txt", "amass-12.json", "private.log"):
             self.output(forbidden, "DO NOT DISPLAY")
         rows = read_tool_output(self.data_dir, self.run_id)
         self.assertFalse(read_progress(self.data_dir, self.run_id)["available"])
         self.assertEqual({row["name"] for row in rows},
-                         {"generator.log", "gowitness.log", "subfinder-12.stderr.log", "subfinder-12.txt"})
+                         {"generator.log", "gowitness.log", "subfinder-12.stderr.log", "subfinder-12.txt",
+                          "amass-12.txt", "amass-12.stdout.log", "amass-12.stderr.log"})
         self.assertNotIn("DO NOT DISPLAY", " ".join(row["text"] for row in rows))
+        diagnostics_run = str(uuid4())
+        diagnostic_names = {"amass-12.engine.log", "amass-version.log",
+                            "massdns-a.jsonl", "massdns-aaaa.jsonl", "massdns-cname.jsonl",
+                            "massdns-a.stderr.log", "massdns-aaaa.stderr.log", "massdns-cname.stderr.log"}
+        for name in diagnostic_names:
+            self.output(name, "recorded diagnostic\n", run_id=diagnostics_run)
+        for forbidden in ("amass-latest.engine.log", "massdns-input.txt", "massdns-resolvers.txt", "massdns-other.jsonl"):
+            self.output(forbidden, "DO NOT DISPLAY", run_id=diagnostics_run)
+        diagnostics = read_tool_output(self.data_dir, diagnostics_run)
+        self.assertEqual({row["name"] for row in diagnostics}, diagnostic_names)
+        self.assertNotIn("DO NOT DISPLAY", " ".join(row["text"] for row in diagnostics))
+        bulk_run = str(uuid4())
+        for name in ("massdns.jsonl", "massdns.stderr.log"):
+            self.output(name, "bulk mixed-question output\n", run_id=bulk_run)
+        self.output("massdns-input.txt", "DO NOT DISPLAY", run_id=bulk_run)
+        bulk_outputs = read_tool_output(self.data_dir, bulk_run)
+        self.assertEqual({row["name"] for row in bulk_outputs}, {"massdns.jsonl", "massdns.stderr.log"})
+        self.assertNotIn("DO NOT DISPLAY", " ".join(row["text"] for row in bulk_outputs))
 
     def test_output_tail_limits_sources_and_prioritizes_recent_nonempty_logs(self):
         for number in range(15):

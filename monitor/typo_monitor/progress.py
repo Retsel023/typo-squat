@@ -28,7 +28,10 @@ MAX_OUTPUT_BYTES = 64 * 1024
 MAX_SOURCE_BYTES = 12 * 1024
 MAX_OUTPUT_SOURCES = 8
 TERMINAL_STAGES = frozenset({"completed", "partial", "cancelled", "failed"})
-_TOOL_NAME = re.compile(r"(?:generator\.log|gowitness\.log|subfinder-\d+\.(?:stderr\.log|txt))\Z")
+_TOOL_NAME = re.compile(
+    r"(?:generator\.log|gowitness\.log|subfinder-\d+\.(?:stderr\.log|txt)"
+    r"|amass-version\.log|amass-\d+\.(?:stdout\.log|stderr\.log|engine\.log|txt)"
+    r"|massdns\.(?:stderr\.log|jsonl)|massdns-(?:a|aaaa|cname)\.(?:stderr\.log|jsonl))\Z")
 _ANSI = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 _REGISTRY_LOCK = threading.Lock()

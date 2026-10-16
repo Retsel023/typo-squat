@@ -7,7 +7,7 @@
     <label for="root-domains">Root domains</label>
     <textarea id="root-domains" name="roots" rows="4" placeholder="example.com&#10;example.org" required spellcheck="false" autocapitalize="none" aria-describedby="roots-help">{{ form.get('roots', '') }}</textarea>
     <p class="field-help" id="roots-help">One domain per line. Use domains you own or are authorized to monitor. Project roots are fixed after creation.</p>
-    <div class="create-dns-workers"><label for="new-dns-workers">DNS workers <span class="optional-label">optional</span></label><input id="new-dns-workers" name="dns_workers" type="number" min="1" max="128" step="1" value="{{ form.get('dns_workers', '') }}" placeholder="Server default ({{ server_dns_workers }})" aria-describedby="new-dns-workers-help"><p class="field-help" id="new-dns-workers-help">Concurrent DNS checks. Choose 1–128, or leave empty for the server default.</p></div>
+    <div class="create-dns-workers"><label for="new-dns-workers">DNS concurrency <span class="optional-label">optional</span></label><input id="new-dns-workers" name="dns_workers" type="number" min="1" max="128" step="1" value="{{ form.get('dns_workers', '') }}" placeholder="Server default ({{ server_dns_workers }})" aria-describedby="new-dns-workers-help"><p class="field-help" id="new-dns-workers-help">Choose 1–128, or leave empty for the server default. MassDNS uses simultaneous DNS requests; the Python resolver uses worker threads.</p></div>
     <button class="button primary" type="submit">Create project <span aria-hidden="true">↗</span></button>
   </form>
 {% endmacro %}

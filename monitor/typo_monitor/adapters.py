@@ -87,7 +87,11 @@ def _run_command(args, *, cancel_event=None, timeout, on_tick=None, **kwargs):
 
 
 class Subfinder:
+    name = "Subfinder"
+
     def __init__(self, executable=None, timeout=180):
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Discovery timeout must be a positive number of seconds.")
         self.executable = executable or shutil.which("subfinder")
         self.timeout = timeout
 
@@ -120,6 +124,7 @@ class Subfinder:
                         found.add(domain)
         return sorted(found), {
             "status": "partial" if errors else "ok",
+            "engine": self.name,
             "detail": "; ".join(errors) if errors else "Passive discovery completed; absence is not evidence of removal.",
             "discovered": len(found),
         }
@@ -197,6 +202,8 @@ class AilGenerator:
 
 class DnsResolver:
     """Query A/AAAA/CNAME. An incomplete response cannot replace a full RRset."""
+
+    name = "dnspython"
 
     def __init__(self, nameservers=None, lifetime=4, workers=24, resolver_factory=None):
         if (not math.isfinite(lifetime) or lifetime <= 0

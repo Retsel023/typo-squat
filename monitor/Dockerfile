@@ -7,6 +7,26 @@ ENV GOTOOLCHAIN=local
 RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath \
     github.com/projectdiscovery/subfinder/v2/cmd/subfinder@${SUBFINDER_VERSION}
 
+# Pin the self-contained v4 CLI. Amass v5 uses a separate HTTP engine and a
+# different export contract; it must not be substituted without lifecycle work.
+ARG AMASS_REVISION=5f1f7176bae60975c1e5be64273cb201f1bb37c3
+RUN git clone --depth 1 --branch v4.2.0 https://github.com/owasp-amass/amass.git /src/amass \
+    && git -C /src/amass checkout --detach ${AMASS_REVISION} \
+    && cd /src/amass \
+    && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/amass ./cmd/amass
+
+# Bulk DNS lookups use a pinned upstream release. Build tools stay in this stage.
+ARG MASSDNS_REVISION=ca8114164361f6a296399d8160bb07d55bdc4843
+COPY tools/massdns-json.patch /tmp/massdns-json.patch
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc make libc6-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --depth 1 --branch v1.1.0 https://github.com/blechschmidt/massdns.git /src/massdns \
+    && git -C /src/massdns checkout --detach ${MASSDNS_REVISION} \
+    && git -C /src/massdns apply /tmp/massdns-json.patch \
+    && make -C /src/massdns \
+    && cp /src/massdns/bin/massdns /out/massdns
+
 # This release includes its built report assets. Pin the commit as well as tag.
 ARG GOWITNESS_REVISION=601c84367aaf26eae7d1b5181b70633cb662cf66
 RUN git clone --depth 1 --branch 3.2.2 https://github.com/sensepost/gowitness.git /src/gowitness \
@@ -35,6 +55,8 @@ RUN pip install --no-cache-dir -r requirements.lock \
     && chown app:app /data
 
 COPY --from=tools /out/subfinder /usr/local/bin/subfinder
+COPY --from=tools /out/amass /usr/local/bin/amass
+COPY --from=tools /out/massdns /usr/local/bin/massdns
 COPY --from=tools /out/gowitness /usr/local/bin/gowitness
 COPY typo_monitor ./typo_monitor
 

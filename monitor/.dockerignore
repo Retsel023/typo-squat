@@ -1,7 +1,9 @@
-# Only application source and dependency declarations enter the build context.
+# Only scanner patches, application source and dependencies enter the context.
 *
 !requirements.txt
 !requirements.lock
+!tools/
+!tools/massdns-json.patch
 !typo_monitor/
 !typo_monitor/**
 typo_monitor/**/__pycache__/
