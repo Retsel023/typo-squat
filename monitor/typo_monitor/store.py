@@ -1,0 +1,717 @@
+"""Transactional observation history with conservative DNS change detection.
+
+Discovery is an accumulating inventory, not evidence that a host disappeared.
+Only explicit NXDOMAIN/no-answer checks count toward a confirmed disappearance.
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import sqlite3
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+from .domains import normalize_domain, normalize_records
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _json(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+class Store:
+    _RUN_SUMMARY_COLUMNS = ("id,project_id,status,started_at,finished_at,is_baseline,"
+                            "'[]' AS events_json,counts_json,source_status_json,error")
+    _STATE_QUERY = """SELECT d.*,
+        EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id
+            AND i.domain=d.domain AND i.kind='seed') AS is_seed,
+        e.parking_status,e.parking_provider,e.parking_evidence_json,e.parking_checked_at
+        FROM domain_states d LEFT JOIN domain_enrichment e
+            ON e.project_id=d.project_id AND e.domain=d.domain"""
+
+    def __init__(self, data_dir):
+        self.data_dir = Path(data_dir).expanduser().resolve()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.data_dir / "monitor.sqlite3"
+        with self._connection() as db:
+            db.execute("PRAGMA journal_mode=WAL")
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS projects (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                    roots_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                    baseline_run_id TEXT, comparison_scope_json TEXT
+                );
+                CREATE TABLE IF NOT EXISTS runs (
+                    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+                    status TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+                    is_baseline INTEGER NOT NULL DEFAULT 0,
+                    events_json TEXT NOT NULL DEFAULT '[]',
+                    counts_json TEXT NOT NULL DEFAULT '{}',
+                    source_status_json TEXT NOT NULL DEFAULT '{}', error TEXT
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS one_running_scan
+                    ON runs(project_id) WHERE status = 'running';
+                CREATE INDEX IF NOT EXISTS project_runs ON runs(project_id, started_at DESC);
+                CREATE TABLE IF NOT EXISTS inventory (
+                    project_id TEXT NOT NULL REFERENCES projects(id), domain TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('seed', 'candidate')),
+                    PRIMARY KEY(project_id, domain, kind)
+                );
+                CREATE TABLE IF NOT EXISTS domain_states (
+                    project_id TEXT NOT NULL REFERENCES projects(id), domain TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'unknown',
+                    records_json TEXT NOT NULL DEFAULT '[]',
+                    first_seen TEXT, last_seen TEXT, last_checked TEXT, last_error TEXT,
+                    missing_count INTEGER NOT NULL DEFAULT 0,
+                    latest_observation TEXT NOT NULL DEFAULT 'unknown',
+                    PRIMARY KEY(project_id, domain)
+                );
+                CREATE TABLE IF NOT EXISTS observations (
+                    run_id TEXT NOT NULL REFERENCES runs(id), domain TEXT NOT NULL,
+                    status TEXT NOT NULL, records_json TEXT NOT NULL, error TEXT,
+                    PRIMARY KEY(run_id, domain)
+                );
+                CREATE INDEX IF NOT EXISTS states_by_status
+                    ON domain_states(project_id,status,domain);
+                CREATE TABLE IF NOT EXISTS candidate_sources (
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    domain TEXT NOT NULL, seed TEXT NOT NULL,
+                    PRIMARY KEY(project_id,domain,seed)
+                );
+                CREATE INDEX IF NOT EXISTS sources_by_seed
+                    ON candidate_sources(project_id,seed,domain);
+                CREATE TABLE IF NOT EXISTS domain_enrichment (
+                    project_id TEXT NOT NULL REFERENCES projects(id), domain TEXT NOT NULL,
+                    parking_status TEXT NOT NULL DEFAULT 'unknown', parking_provider TEXT,
+                    parking_evidence_json TEXT NOT NULL DEFAULT '[]', parking_checked_at TEXT,
+                    PRIMARY KEY(project_id,domain)
+                );
+                CREATE TABLE IF NOT EXISTS captures (
+                    run_id TEXT NOT NULL REFERENCES runs(id),
+                    project_id TEXT NOT NULL REFERENCES projects(id), domain TEXT NOT NULL,
+                    scheme TEXT NOT NULL CHECK(scheme IN ('http','https')),
+                    status TEXT NOT NULL CHECK(status IN ('captured','failed','unavailable','skipped')),
+                    relative_path TEXT, url TEXT NOT NULL, title TEXT, http_status INTEGER,
+                    error TEXT, captured_at TEXT NOT NULL,
+                    visual_json TEXT NOT NULL DEFAULT '{}',
+                    analysis_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY(run_id,domain,scheme)
+                );
+                CREATE INDEX IF NOT EXISTS captures_by_scheme
+                    ON captures(project_id,domain,scheme,captured_at DESC);
+                CREATE INDEX IF NOT EXISTS captures_by_domain
+                    ON captures(project_id,domain,captured_at DESC);
+            """)
+        # Existing development databases predate resolver-scope persistence.
+        # Serialize the inspection and ALTER to make concurrent startup safe.
+        with self._connection(write=True) as db:
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(projects)")}
+            if "comparison_scope_json" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN comparison_scope_json TEXT")
+            capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
+            for column in ("visual_json", "analysis_json"):
+                if column not in capture_columns:
+                    db.execute(f"ALTER TABLE captures ADD COLUMN {column} TEXT NOT NULL DEFAULT '{{}}'")
+
+    @contextmanager
+    def _connection(self, *, write=False):
+        db = sqlite3.connect(self.path, timeout=30)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA foreign_keys=ON")
+        db.execute("PRAGMA busy_timeout=30000")
+        try:
+            if write:
+                db.execute("BEGIN IMMEDIATE")
+            yield db
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    @staticmethod
+    def _project(db, row):
+        if row is None:
+            return None
+        result = dict(row)
+        result["roots"] = json.loads(result.pop("roots_json"))
+        scope_json = result.pop("comparison_scope_json")
+        result["comparison_scope"] = json.loads(scope_json) if scope_json is not None else None
+        result.pop("baseline_run_id", None)
+        latest = db.execute(
+            f"SELECT {Store._RUN_SUMMARY_COLUMNS} FROM runs WHERE project_id=? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            (result["id"],),
+        ).fetchone()
+        result["last_run"] = Store._run(latest)
+        return result
+
+    @staticmethod
+    def _run(row):
+        if row is None:
+            return None
+        result = dict(row)
+        for key in ("events", "counts", "source_status"):
+            result[key] = json.loads(result.pop(key + "_json"))
+        result["is_baseline"] = bool(result["is_baseline"])
+        return result
+
+    @staticmethod
+    def _state(row):
+        result = dict(row)
+        result.pop("project_id", None)
+        result["records"] = json.loads(result.pop("records_json"))
+        result["is_seed"] = bool(result.pop("is_seed", False))
+        result["sources"] = []
+        result["screenshots"] = []
+        result["parking"] = {
+            "status": result.pop("parking_status", None) or "unknown",
+            "provider": result.pop("parking_provider", None),
+            "evidence": json.loads(result.pop("parking_evidence_json", None) or "[]"),
+            "checked_at": result.pop("parking_checked_at", None),
+        }
+        return result
+
+    @staticmethod
+    def _public_states(db, project_id, rows):
+        items = [Store._state(row) for row in rows]
+        by_domain = {item["domain"]: item for item in items}
+        domains = list(by_domain)
+        # Stay below older SQLite parameter limits without a query per domain.
+        for offset in range(0, len(domains), 800):
+            batch = domains[offset:offset + 800]
+            placeholders = ",".join("?" for _ in batch)
+            for row in db.execute(
+                f"SELECT domain,seed FROM candidate_sources WHERE project_id=? AND domain IN ({placeholders}) ORDER BY domain,seed",
+                [project_id, *batch],
+            ):
+                by_domain[row["domain"]]["sources"].append(row["seed"])
+            # Only latest attempts and latest successful images reach the UI;
+            # older artifacts remain available through capture history.
+            latest, successful = {}, {}
+            for row in db.execute(f"""SELECT * FROM (
+                SELECT c.*,
+                    ROW_NUMBER() OVER(PARTITION BY domain,scheme ORDER BY captured_at DESC,rowid DESC) AS attempt_rank,
+                    ROW_NUMBER() OVER(PARTITION BY domain,scheme,status ORDER BY captured_at DESC,rowid DESC) AS status_rank
+                FROM captures c WHERE project_id=? AND domain IN ({placeholders})
+                ) WHERE attempt_rank=1 OR (status='captured' AND status_rank=1)""", [project_id, *batch]):
+                key = (row["domain"], row["scheme"])
+                capture = Store._capture(row)
+                if row["attempt_rank"] == 1:
+                    latest[key] = capture
+                if row["status"] == "captured" and row["status_rank"] == 1:
+                    successful[key] = capture
+            for key in sorted(latest):
+                capture = latest[key]
+                if capture["status"] != "captured" and key in successful:
+                    capture["previous_capture"] = successful[key]
+                by_domain[key[0]]["screenshots"].append(capture)
+        return items
+
+    @staticmethod
+    def _capture(row):
+        if row is None:
+            return None
+        capture = dict(row)
+        capture.pop("attempt_rank", None)
+        capture.pop("status_rank", None)
+        capture["visual"] = json.loads(capture.pop("visual_json", "{}"))
+        capture["analysis"] = json.loads(capture.pop("analysis_json", "{}"))
+        return capture
+
+    @staticmethod
+    def _normalize_screenshots(screenshots):
+        if screenshots is None:
+            return {}
+        if not isinstance(screenshots, Mapping):
+            raise ValueError("Screenshots must map candidate domains to capture attempts.")
+        normalized = {}
+        for domain, attempts in screenshots.items():
+            domain = normalize_domain(domain)
+            if domain in normalized or not isinstance(attempts, (list, tuple)):
+                raise ValueError("Screenshots require one list of attempts per domain.")
+            normalized[domain] = []
+            schemes = set()
+            for attempt in attempts:
+                if not isinstance(attempt, Mapping):
+                    raise ValueError("Invalid screenshot attempt.")
+                scheme, status = attempt.get("scheme"), attempt.get("status")
+                if scheme not in ("http", "https") or scheme in schemes:
+                    raise ValueError("Screenshot schemes must be unique HTTP or HTTPS targets.")
+                if status not in ("captured", "failed", "unavailable", "skipped"):
+                    raise ValueError("Invalid screenshot status.")
+                schemes.add(scheme)
+                relative_path = attempt.get("relative_path")
+                if status == "captured":
+                    if (not isinstance(relative_path, str) or not relative_path
+                            or "\\" in relative_path or any(ord(c) < 32 for c in relative_path)
+                            or PurePosixPath(relative_path).is_absolute()
+                            or PureWindowsPath(relative_path).drive
+                            or ".." in PurePosixPath(relative_path).parts
+                            or PurePosixPath(relative_path).suffix.lower() not in {".png", ".jpg", ".jpeg"}):
+                        raise ValueError("Screenshot paths must be relative PNG or JPEG files within the run directory.")
+                    relative_path = PurePosixPath(relative_path).as_posix()
+                elif relative_path is not None:
+                    raise ValueError("Unsuccessful screenshot attempts cannot claim an image path.")
+                url = attempt.get("url", f"{scheme}://{domain}")
+                try:
+                    parsed = urlsplit(url)
+                    valid_url = (parsed.scheme == scheme and normalize_domain(parsed.hostname or "") == domain
+                                 and parsed.username is None and parsed.password is None)
+                    parsed.port  # Reject malformed ports even when a hostname parsed.
+                except (TypeError, ValueError, AttributeError):
+                    valid_url = False
+                if not isinstance(url, str) or not valid_url:
+                    raise ValueError("Screenshot URL must match the candidate domain and scheme.")
+                title, error, http_status = attempt.get("title"), attempt.get("error"), attempt.get("http_status")
+                if ((title is not None and not isinstance(title, str))
+                        or (error is not None and not isinstance(error, str))
+                        or (http_status is not None and (not isinstance(http_status, int) or isinstance(http_status, bool)))):
+                    raise ValueError("Invalid screenshot title, HTTP status, or error.")
+                timestamp = attempt.get("captured_at", _now())
+                visual = attempt.get("visual", {})
+                if not isinstance(visual, dict) or len(_json(visual)) > 16384:
+                    raise ValueError("Invalid screenshot comparison metadata.")
+                try:
+                    captured_at = datetime.fromisoformat(timestamp)
+                    if captured_at.tzinfo is None or captured_at.utcoffset() != timedelta(0):
+                        raise ValueError("Screenshot timestamps must be UTC.")
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Screenshot timestamps must be UTC ISO dates.") from exc
+                normalized[domain].append({"scheme": scheme, "status": status, "relative_path": relative_path,
+                    "url": url, "title": title, "http_status": http_status, "error": error,
+                    "captured_at": captured_at.astimezone(timezone.utc).isoformat(timespec="microseconds"),
+                    "visual": visual})
+        return normalized
+
+    @staticmethod
+    def _require_project(db, project_id):
+        row = db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
+        if row is None:
+            raise ValueError("Project not found.")
+        return row
+
+    @staticmethod
+    def _require_running(db, run_id):
+        row = db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            raise ValueError("Run not found.")
+        if row["status"] != "running":
+            raise ValueError("This run has already finished.")
+        return row
+
+    def create_project(self, name, roots):
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 128:
+            raise ValueError("Project name must contain 1–128 characters.")
+        if isinstance(roots, str):
+            raise ValueError("Roots must be a list of domain names.")
+        roots = sorted({normalize_domain(domain) for domain in roots})
+        if not roots:
+            raise ValueError("At least one root domain is required.")
+        project_id = str(uuid4())
+        with self._connection(write=True) as db:
+            db.execute(
+                "INSERT INTO projects(id,name,roots_json,created_at) VALUES(?,?,?,?)",
+                (project_id, name.strip(), _json(roots), _now()),
+            )
+            db.executemany("INSERT INTO inventory VALUES(?,?, 'seed')", [(project_id, d) for d in roots])
+            return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+    def list_projects(self):
+        with self._connection() as db:
+            return [self._project(db, row) for row in db.execute("SELECT * FROM projects ORDER BY created_at, id").fetchall()]
+
+    def get_project(self, project_id):
+        with self._connection() as db:
+            return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+    def bind_comparison_scope(self, project_id, scope):
+        """Pin the resolver view once this project has an informative baseline."""
+        if not isinstance(scope, dict):
+            raise ValueError("DNS comparison settings must be a mapping.")
+        try:
+            scope_json = _json(scope)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("DNS comparison settings must be JSON serializable.") from exc
+        with self._connection(write=True) as db:
+            project = self._require_project(db, project_id)
+            if (project["baseline_run_id"] is not None
+                    and project["comparison_scope_json"] is not None
+                    and project["comparison_scope_json"] != scope_json):
+                raise RuntimeError(
+                    "DNS comparison settings changed. Create a new project/baseline "
+                    "or keep the same resolvers, query types, and missing threshold."
+                )
+            db.execute("UPDATE projects SET comparison_scope_json=? WHERE id=?", (scope_json, project_id))
+            return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
+    def inventory(self, project_id):
+        with self._connection() as db:
+            self._require_project(db, project_id)
+            rows = db.execute("SELECT domain,kind FROM inventory WHERE project_id=? ORDER BY domain", (project_id,)).fetchall()
+            return {"seeds": [r["domain"] for r in rows if r["kind"] == "seed"],
+                    "candidates": [r["domain"] for r in rows if r["kind"] == "candidate"]}
+
+    def start_run(self, project_id):
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
+                raise RuntimeError("A scan is already running for this project.")
+            run_id = str(uuid4())
+            db.execute("INSERT INTO runs(id,project_id,status,started_at) VALUES(?,?, 'running', ?)",
+                       (run_id, project_id, _now()))
+            return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+
+    @staticmethod
+    def _sources_complete(source_status):
+        for value in source_status.values():
+            status = value.get("status", "unknown") if isinstance(value, dict) else value
+            if status not in ("ok", "success", "completed", "skipped", "disabled", True):
+                return False
+        return True
+
+    def finish_run(self, run_id, *, seeds, candidates, observations, source_status, missing_threshold=2, provenance=None, screenshots=None):
+        """Accept a scan atomically, retaining every previously known candidate.
+
+        An omitted domain is unchecked, never absent. Unknown checks interrupt
+        consecutive-negative counting. No event claims registration or deletion.
+        """
+        if not isinstance(missing_threshold, int) or isinstance(missing_threshold, bool) or missing_threshold < 2:
+            raise ValueError("At least two negative checks are required to confirm missing domains.")
+        if not isinstance(source_status, dict) or not isinstance(observations, dict):
+            raise ValueError("Source status and observations must be mappings.")
+        seeds = sorted({normalize_domain(domain) for domain in seeds})
+        candidates = sorted({normalize_domain(domain) for domain in candidates})
+        normalized_screenshots = self._normalize_screenshots(screenshots)
+        if provenance is not None and not isinstance(provenance, Mapping):
+            raise ValueError("Candidate provenance must be a mapping.")
+        normalized_provenance = {}
+        for domain, sources in (provenance or {}).items():
+            if isinstance(sources, str):
+                raise ValueError("Candidate sources must be a list of seed domains.")
+            domain = normalize_domain(domain)
+            normalized_provenance.setdefault(domain, set()).update(normalize_domain(seed) for seed in sources)
+        normalized = {}
+        for domain, observation in observations.items():
+            domain = normalize_domain(domain)
+            if domain in normalized:
+                raise ValueError("Duplicate normalized domain observations.")
+            if not isinstance(observation, dict) or observation.get("status") not in {"resolved", "nxdomain", "noanswer", "unknown"}:
+                raise ValueError("Unsupported DNS observation status.")
+            status = observation["status"]
+            records = normalize_records(observation.get("records", []))
+            if status == "resolved" and not records:
+                raise ValueError("A resolved observation requires DNS records.")
+            if status != "resolved" and records:
+                raise ValueError("Only resolved observations may contain DNS records.")
+            error = observation.get("error")
+            if error is not None and not isinstance(error, str):
+                raise ValueError("Observation errors must be strings.")
+            parking = observation.get("parking", {"status": "unknown"})
+            if (not isinstance(parking, dict)
+                    or parking.get("status") not in {"likely_parked", "not_detected", "unknown"}
+                    or (parking.get("provider") is not None and not isinstance(parking["provider"], str))
+                    or not isinstance(parking.get("evidence", []), list)
+                    or not all(isinstance(item, str) for item in parking.get("evidence", []))):
+                raise ValueError("Invalid domain parking observation.")
+            parking = {"status": parking["status"], "provider": parking.get("provider"), "evidence": parking.get("evidence", [])}
+            if status != "resolved":
+                parking = {"status": "unknown", "provider": None, "evidence": []}
+            normalized[domain] = {"status": status, "records": records, "error": error, "parking": parking}
+        source_json = _json(source_status)
+        with self._connection(write=True) as db:
+            run = self._require_running(db, run_id)
+            project_id = run["project_id"]
+            project = self._require_project(db, project_id)
+            db.executemany("INSERT OR IGNORE INTO inventory VALUES(?,?, 'seed')", [(project_id, d) for d in seeds])
+            db.executemany("INSERT OR IGNORE INTO inventory VALUES(?,?, 'candidate')", [(project_id, d) for d in candidates])
+            candidate_set = {row[0] for row in db.execute("SELECT domain FROM inventory WHERE project_id=? AND kind='candidate'", (project_id,))}
+            if not normalized.keys() <= candidate_set:
+                raise ValueError("Observations must belong to the candidate inventory.")
+            if not normalized_screenshots.keys() <= candidate_set:
+                raise ValueError("Screenshots must belong to the candidate inventory.")
+            seed_set = {row[0] for row in db.execute("SELECT domain FROM inventory WHERE project_id=? AND kind='seed'", (project_id,))}
+            if (not normalized_provenance.keys() <= candidate_set
+                    or any(not sources <= seed_set for sources in normalized_provenance.values())):
+                raise ValueError("Provenance must link known candidates to known seed domains.")
+            db.executemany("INSERT OR IGNORE INTO candidate_sources VALUES(?,?,?)",
+                           [(project_id, domain, seed) for domain, sources in normalized_provenance.items() for seed in sorted(sources)])
+            db.executemany("INSERT OR IGNORE INTO domain_states(project_id,domain) VALUES(?,?)", [(project_id, d) for d in sorted(candidate_set)])
+            baseline = project["baseline_run_id"] is None
+            informative = any(o["status"] != "unknown" for o in normalized.values())
+            preceding = db.execute(
+                "SELECT status FROM runs WHERE project_id=? AND id<>? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                (project_id, run_id),
+            ).fetchone()
+            interrupted_sequence = preceding is not None and preceding["status"] == "failed"
+            events = []
+            finished_at = _now()
+            for domain, observation in sorted(normalized.items()):
+                previous = self._state(db.execute("SELECT * FROM domain_states WHERE project_id=? AND domain=?", (project_id, domain)).fetchone())
+                current = dict(previous)
+                if interrupted_sequence:
+                    current["missing_count"] = 0
+                current.update(last_checked=finished_at, last_error=observation["error"], latest_observation=observation["status"])
+                kind, detail = None, None
+                if observation["status"] == "resolved":
+                    current.update(status="resolved", records=observation["records"], missing_count=0,
+                                   first_seen=previous["first_seen"] or finished_at, last_seen=finished_at)
+                    if previous["first_seen"] is None:
+                        kind, detail = "newly_observed", "First successful DNS observation; this does not establish a registration date."
+                    elif previous["status"] == "missing":
+                        kind, detail = "reappeared", "DNS resolved after a confirmed period of negative observations."
+                    elif previous["records"] != current["records"]:
+                        kind, detail = "records_changed", "The normalized DNS record set changed."
+                elif observation["status"] in {"nxdomain", "noanswer"}:
+                    current["missing_count"] += 1
+                    if previous["status"] == "missing" or current["missing_count"] >= missing_threshold:
+                        current["status"] = "missing"
+                        if previous["status"] != "missing" and previous["first_seen"] is not None:
+                            kind = "missing_confirmed"
+                            detail = f"{current['missing_count']} consecutive explicit negative DNS observations."
+                    else:
+                        current["status"] = "pending_missing"
+                else:
+                    current["missing_count"] = 0
+                    current["status"] = "missing" if previous["status"] == "missing" else "unknown"
+                if kind and not baseline:
+                    events.append({"domain": domain, "kind": kind, "before": previous["records"],
+                                   "after": [] if kind == "missing_confirmed" else current["records"], "detail": detail})
+                db.execute("""UPDATE domain_states SET status=?,records_json=?,first_seen=?,last_seen=?,
+                    last_checked=?,last_error=?,missing_count=?,latest_observation=? WHERE project_id=? AND domain=?""",
+                    (current["status"], _json(current["records"]), current["first_seen"], current["last_seen"],
+                     current["last_checked"], current["last_error"], current["missing_count"], current["latest_observation"], project_id, domain))
+                db.execute("INSERT INTO observations VALUES(?,?,?,?,?)",
+                           (run_id, domain, observation["status"], _json(observation["records"]), observation["error"]))
+                parking = observation["parking"]
+                db.execute("""INSERT INTO domain_enrichment VALUES(?,?,?,?,?,?)
+                    ON CONFLICT(project_id,domain) DO UPDATE SET
+                    parking_status=excluded.parking_status,parking_provider=excluded.parking_provider,
+                    parking_evidence_json=excluded.parking_evidence_json,parking_checked_at=excluded.parking_checked_at""",
+                    (project_id, domain, parking["status"], parking["provider"], _json(parking["evidence"]), finished_at))
+            # An unchecked scan interrupts the sequence as well: two negative
+            # results separated by an incomplete check are not consecutive.
+            for domain in candidate_set - normalized.keys():
+                db.execute("""UPDATE domain_states SET missing_count=0,
+                    status=CASE WHEN status='missing' THEN 'missing' ELSE 'unknown' END
+                    WHERE project_id=? AND domain=?""", (project_id, domain))
+                db.execute("""UPDATE domain_enrichment SET parking_status='unknown',parking_provider=NULL,
+                    parking_evidence_json='[]',parking_checked_at=NULL WHERE project_id=? AND domain=?""", (project_id, domain))
+            counts = {"seeds": db.execute("SELECT COUNT(*) FROM inventory WHERE project_id=? AND kind='seed'", (project_id,)).fetchone()[0],
+                      "candidates": len(candidate_set), "checked": len(normalized), "events": len(events)}
+            counts.update({status: sum(o["status"] == status for o in normalized.values())
+                           for status in ("resolved", "nxdomain", "noanswer", "unknown")})
+            counts["unchecked"] = len(candidate_set) - len(normalized)
+            for kind in ("newly_observed", "records_changed", "missing_confirmed", "reappeared"):
+                counts[kind] = sum(event["kind"] == kind for event in events)
+            for state in ("missing", "pending_missing"):
+                counts[state] = db.execute("SELECT COUNT(*) FROM domain_states WHERE project_id=? AND status=?", (project_id, state)).fetchone()[0]
+            if screenshots is not None:
+                attempts = [(domain, attempt) for domain, entries in normalized_screenshots.items() for attempt in entries]
+                db.executemany("""INSERT INTO captures(run_id,project_id,domain,scheme,status,relative_path,
+                    url,title,http_status,error,captured_at,visual_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    [(run_id, project_id, domain, attempt["scheme"], attempt["status"], attempt["relative_path"],
+                      attempt["url"], attempt["title"], attempt["http_status"], attempt["error"], attempt["captured_at"], _json(attempt["visual"]))
+                     for domain, attempt in attempts])
+                counts["screenshots_total"] = len(attempts)
+                for capture_status in ("captured", "failed", "unavailable", "skipped"):
+                    counts["screenshots_" + capture_status] = sum(attempt["status"] == capture_status for _, attempt in attempts)
+                for image_change in ("first_capture", "changed", "unchanged", "uncertain"):
+                    counts["images_" + image_change] = sum(attempt["visual"].get("change") == image_change for _, attempt in attempts)
+            complete = self._sources_complete(source_status) and not counts["unknown"] and not counts["unchecked"]
+            status = "completed" if complete else "partial"
+            db.execute("""UPDATE runs SET status=?,finished_at=?,is_baseline=?,events_json=?,counts_json=?,
+                source_status_json=? WHERE id=?""", (status, finished_at, baseline and informative, _json(events), _json(counts), source_json, run_id))
+            if baseline and informative:
+                db.execute("UPDATE projects SET baseline_run_id=? WHERE id=?", (run_id, project_id))
+            return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+
+    def fail_run(self, run_id, error):
+        with self._connection(write=True) as db:
+            self._require_running(db, run_id)
+            db.execute("UPDATE runs SET status='failed',finished_at=?,error=? WHERE id=?", (_now(), str(error), run_id))
+            return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+
+    def recover_interrupted_runs(self):
+        """Mark leftover running jobs failed at service startup; return their count."""
+        with self._connection(write=True) as db:
+            result = db.execute("""UPDATE runs SET status='failed',finished_at=?,
+                error='Scan interrupted before completion; accepted observations were preserved.'
+                WHERE status='running'""", (_now(),))
+            return result.rowcount
+
+    def get_run(self, run_id):
+        with self._connection() as db:
+            return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+
+    def list_runs(self, project_id, limit=None, include_events=True):
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
+            raise ValueError("Run limit must be a positive integer.")
+        columns = "*" if include_events else self._RUN_SUMMARY_COLUMNS
+        query = f"SELECT {columns} FROM runs WHERE project_id=? ORDER BY started_at DESC, rowid DESC"
+        parameters = [project_id]
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters.append(limit)
+        with self._connection() as db:
+            self._require_project(db, project_id)
+            return [self._run(row) for row in db.execute(query, parameters)]
+
+    def get_domains(self, project_id):
+        return self.export_domains(project_id)
+
+    def get_domain(self, project_id, domain):
+        try:
+            domain = normalize_domain(domain)
+        except ValueError:
+            return None
+        with self._connection() as db:
+            db.execute("BEGIN")
+            self._require_project(db, project_id)
+            row = db.execute(self._STATE_QUERY + " WHERE d.project_id=? AND d.domain=?", (project_id, domain)).fetchone()
+            return self._public_states(db, project_id, [row])[0] if row is not None else None
+
+    def get_capture(self, run_id, domain, scheme):
+        try:
+            domain = normalize_domain(domain)
+        except ValueError:
+            return None
+        if scheme not in ("http", "https"):
+            return None
+        with self._connection() as db:
+            return self._capture(db.execute("SELECT * FROM captures WHERE run_id=? AND domain=? AND scheme=?",
+                                           (run_id, domain, scheme)).fetchone())
+
+    def list_captures(self, project_id, domain, limit=20):
+        domain = normalize_domain(domain)
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise ValueError("Capture history limit must be between 1 and 1000.")
+        with self._connection() as db:
+            self._require_project(db, project_id)
+            return [self._capture(row) for row in db.execute("""SELECT * FROM captures
+                WHERE project_id=? AND domain=? ORDER BY captured_at DESC,rowid DESC LIMIT ?""", (project_id, domain, limit))]
+
+    def list_run_captures(self, run_id):
+        with self._connection() as db:
+            return [self._capture(row) for row in db.execute(
+                "SELECT * FROM captures WHERE run_id=? ORDER BY domain,scheme", (run_id,))]
+
+    def latest_successful_capture(self, project_id, domain, scheme):
+        domain = normalize_domain(domain)
+        if scheme not in ("http", "https"):
+            return None
+        with self._connection() as db:
+            return self._capture(db.execute("""SELECT * FROM captures WHERE project_id=? AND domain=?
+                AND scheme=? AND status='captured' ORDER BY captured_at DESC,rowid DESC LIMIT 1""",
+                (project_id, domain, scheme)).fetchone())
+
+    def save_capture_review(self, run_id, domain, scheme, review):
+        if not isinstance(review, dict):
+            raise ValueError("AI assessment must be a JSON object.")
+        for field in ("provider", "model", "summary"):
+            if not isinstance(review.get(field), str) or not review[field].strip():
+                raise ValueError(f"AI assessment requires {field}.")
+        if review.get("risk") not in ("low", "medium", "high", "uncertain"):
+            raise ValueError("AI assessment risk must be low, medium, high, or uncertain.")
+        if review.get("changed") is not None and not isinstance(review["changed"], bool):
+            raise ValueError("AI changed assessment must be boolean or null.")
+        confidence = review.get("confidence")
+        if confidence is not None and (not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1):
+            raise ValueError("AI confidence must be between 0 and 1.")
+        assessment = {field: review.get(field) for field in ("provider", "model", "summary", "risk", "changed", "confidence")}
+        assessment["reviewed_at"] = _now()
+        serialized = _json(assessment)
+        if len(serialized) > 16384:
+            raise ValueError("AI assessment is too large.")
+        with self._connection(write=True) as db:
+            result = db.execute("""UPDATE captures SET analysis_json=? WHERE run_id=? AND domain=?
+                AND scheme=? AND status='captured'""", (serialized, run_id, normalize_domain(domain), scheme))
+            if result.rowcount != 1:
+                raise ValueError("A successful capture is required for an AI assessment.")
+            return self._capture(db.execute("SELECT * FROM captures WHERE run_id=? AND domain=? AND scheme=?",
+                                           (run_id, normalize_domain(domain), scheme)).fetchone())
+
+    def domain_counts(self, project_id):
+        with self._connection() as db:
+            self._require_project(db, project_id)
+            counts = dict.fromkeys(("total", "resolved", "pending_missing", "missing", "unknown", "likely_parked"), 0)
+            for row in db.execute("SELECT status,COUNT(*) AS count FROM domain_states WHERE project_id=? GROUP BY status", (project_id,)):
+                counts[row["status"]] = row["count"]
+                counts["total"] += row["count"]
+            counts["likely_parked"] = db.execute("""SELECT COUNT(*) FROM domain_states d
+                JOIN domain_enrichment e ON e.project_id=d.project_id AND e.domain=d.domain
+                WHERE d.project_id=? AND d.status='resolved' AND e.parking_status='likely_parked'""", (project_id,)).fetchone()[0]
+            return counts
+
+    @staticmethod
+    def _domain_filter(project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True):
+        if (not isinstance(query, str) or not isinstance(status, str)
+                or status not in {"", "resolved", "pending_missing", "missing", "unknown"}):
+            raise ValueError("Invalid domain search or status filter.")
+        if not isinstance(seed, str) or not isinstance(hide_parked, bool) or not isinstance(include_seeds, bool):
+            raise ValueError("Invalid domain source or parking filter.")
+        where = "d.project_id=?"
+        parameters = [project_id]
+        if query:
+            literal = query.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where += " AND d.domain LIKE ? ESCAPE '\\'"
+            parameters.append("%" + literal + "%")
+        if status:
+            where += " AND d.status=?"
+            parameters.append(status)
+        if seed == "__unattributed__":
+            where += " AND NOT EXISTS(SELECT 1 FROM candidate_sources s WHERE s.project_id=d.project_id AND s.domain=d.domain)"
+        elif seed:
+            seed = normalize_domain(seed)
+            where += " AND EXISTS(SELECT 1 FROM candidate_sources s WHERE s.project_id=d.project_id AND s.domain=d.domain AND s.seed=?)"
+            parameters.append(seed)
+        if hide_parked:
+            where += " AND NOT EXISTS(SELECT 1 FROM domain_enrichment e WHERE e.project_id=d.project_id AND e.domain=d.domain AND e.parking_status='likely_parked')"
+        if not include_seeds:
+            where += " AND NOT EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id AND i.domain=d.domain AND i.kind='seed')"
+        return where, parameters
+
+    def query_domains(self, project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True, limit=100, offset=0):
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
+            raise ValueError("Page limit must be between 1 and 1000.")
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError("Page offset must be a nonnegative integer.")
+        where, parameters = self._domain_filter(project_id, query=query, status=status, seed=seed,
+                                                  hide_parked=hide_parked, include_seeds=include_seeds)
+        with self._connection() as db:
+            db.execute("BEGIN")
+            self._require_project(db, project_id)
+            total = db.execute(f"SELECT COUNT(*) FROM domain_states d WHERE {where}", parameters).fetchone()[0]
+            rows = db.execute(
+                self._STATE_QUERY + f" WHERE {where} ORDER BY d.domain LIMIT ? OFFSET ?",
+                [*parameters, limit, offset],
+            ).fetchall()
+            return {"items": self._public_states(db, project_id, rows), "total": total}
+
+    def export_domains(self, project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True):
+        """Read the entire filtered view, including metadata, in one snapshot."""
+        where, parameters = self._domain_filter(project_id, query=query, status=status, seed=seed,
+                                                  hide_parked=hide_parked, include_seeds=include_seeds)
+        with self._connection() as db:
+            db.execute("BEGIN")
+            self._require_project(db, project_id)
+            rows = db.execute(self._STATE_QUERY + f" WHERE {where} ORDER BY d.domain", parameters).fetchall()
+            return self._public_states(db, project_id, rows)
+
+    def source_groups(self, project_id, *, status="resolved", hide_parked=False, include_seeds=False, query=""):
+        where, parameters = self._domain_filter(project_id, query=query, status=status,
+                                                  hide_parked=hide_parked, include_seeds=include_seeds)
+        with self._connection() as db:
+            self._require_project(db, project_id)
+            rows = db.execute(f"""SELECT COALESCE(s.seed,'__unattributed__') AS seed,COUNT(*) AS total
+                FROM domain_states d LEFT JOIN candidate_sources s
+                    ON s.project_id=d.project_id AND s.domain=d.domain
+                WHERE {where} GROUP BY s.seed ORDER BY seed""", parameters)
+            return [dict(row) for row in rows]

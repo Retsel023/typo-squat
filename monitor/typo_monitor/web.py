@@ -1,0 +1,437 @@
+"""Local, server-rendered interface for persistent domain monitoring."""
+
+from __future__ import annotations
+
+import csv
+import io
+import os
+import secrets
+from datetime import datetime
+from pathlib import Path
+from uuid import UUID
+
+from flask import (
+    Flask, Response, abort, flash, redirect, render_template, request, send_file, session, url_for,
+)
+
+from .domains import normalize_domain, parse_domains
+from .handoff import review_selection
+
+
+DOMAIN_LABELS = {
+    "resolved": "Resolves",
+    "pending_missing": "Awaiting confirmation",
+    "missing": "DNS absence confirmed",
+    "unknown": "DNS uncertain",
+}
+EVENT_LABELS = {
+    "newly_observed": "Newly observed",
+    "records_changed": "DNS records changed",
+    "missing_confirmed": "DNS absence confirmed",
+    "reappeared": "Resolves again",
+}
+RUN_LABELS = {
+    "running": "Scan in progress", "completed": "Completed",
+    "partial": "Completed with gaps", "failed": "Failed",
+}
+
+
+def _date(value):
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.strftime("%d %b %Y · %H:%M UTC") if parsed.utcoffset() is not None and parsed.utcoffset().total_seconds() == 0 else parsed.strftime("%d %b %Y · %H:%M %z")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def _records(value):
+    """Present normalized records and tolerate legacy serialized observations."""
+    if not value:
+        return []
+    if isinstance(value, dict):
+        value = value.get("records", [])
+    result = []
+    for record in value:
+        if isinstance(record, dict):
+            result.append((record.get("type", ""), record.get("value", "")))
+        elif isinstance(record, (list, tuple)) and len(record) >= 2:
+            result.append((record[0], record[1]))
+        else:
+            result.append(("", str(record)))
+    return result
+
+
+def _csv_cell(value):
+    text = "" if value is None else str(value)
+    # Spreadsheet applications can evaluate formulas even when CSV-quoted.
+    if text.lstrip().startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")):
+        return "'" + text
+    return text
+
+
+def _prepare_domain(domain):
+    """Collapse only a successful, same-run exact protocol duplicate."""
+    result = dict(domain)
+    attempts = {item.get("scheme"): item for item in result.get("screenshots", [])
+                if isinstance(item, dict) and item.get("scheme") in {"http", "https"}}
+    result.update(gallery_schemes=["http", "https"], protocol_relation=None)
+    http, https = attempts.get("http"), attempts.get("https")
+    if (not http or not https or http.get("status") != "captured" or https.get("status") != "captured"
+            or not http.get("run_id") or http.get("run_id") != https.get("run_id")):
+        return result
+    for scheme, capture in (("http", http), ("https", https)):
+        visual = capture.get("visual") or {}
+        other = "https" if scheme == "http" else "http"
+        if visual.get("duplicate_of") != other:
+            continue
+        if visual.get("duplicate_kind") == "exact":
+            result.update(gallery_schemes=[other], protocol_relation="exact")
+            return result
+        if visual.get("duplicate_kind") == "similar":
+            result["protocol_relation"] = "similar"
+    return result
+
+
+def create_app(service):
+    app = Flask(__name__)
+    app.config.update(SECRET_KEY=secrets.token_hex(32), MAX_CONTENT_LENGTH=64 * 1024,
+                      SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Strict")
+    app.extensions["monitor_service"] = service
+    app.jinja_env.filters["date"] = _date
+    app.jinja_env.filters["records"] = _records
+
+    @app.before_request
+    def protect_forms():
+        # This Blueprint authenticates its own requests with a bearer token.
+        if request.blueprint == "automation":
+            return
+        if "csrf_token" not in session:
+            session["csrf_token"] = secrets.token_urlsafe(32)
+        if request.method == "POST":
+            supplied = request.form.get("csrf_token", "")
+            if not secrets.compare_digest(supplied, session["csrf_token"]):
+                abort(400, description="This form expired. Reload the page and try again.")
+
+    @app.after_request
+    def response_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'; form-action 'self'; base-uri 'self'"
+        response.headers["Cache-Control"] = ("private, max-age=31536000, immutable"
+                                             if request.endpoint == "capture_image" and response.status_code == 200
+                                             else "no-store")
+        return response
+
+    @app.context_processor
+    def common_context():
+        return {"csrf_token": session.get("csrf_token", ""), "domain_labels": DOMAIN_LABELS,
+                "event_labels": EVENT_LABELS, "run_labels": RUN_LABELS,
+                "interval_hours": getattr(service, "interval_hours", 0)}
+
+    def project_or_404(project_id):
+        try:
+            project = service.store.get_project(str(project_id))
+        except KeyError:
+            project = None
+        if project is None:
+            abort(404, description="This project could not be found.")
+        return project
+
+    def project_runs(project_id):
+        return sorted(service.store.list_runs(str(project_id), limit=20, include_events=False),
+                      key=lambda run: run.get("started_at", ""), reverse=True)
+
+    def selected_filters():
+        status = request.args.get("status", "resolved")
+        if status and status not in DOMAIN_LABELS:
+            abort(400, description="Choose a valid domain status.")
+        seed = request.args.get("seed", "").strip()
+        if seed and seed != "__unattributed__":
+            try:
+                seed = normalize_domain(seed)
+            except ValueError:
+                abort(400, description="Choose a valid source domain.")
+        return {"query": request.args.get("q", "").strip()[:253], "status": status,
+                "seed": seed, "hide_parked": request.args.get("hide_parked", "") == "1",
+                "include_seeds": request.args.get("include_seeds", "") == "1"}
+
+    def selected_view():
+        view = request.args.get("view", "gallery")
+        if view not in {"gallery", "table"}:
+            abort(400, description="Choose gallery or table view.")
+        return view
+
+    def filter_parameters(filters, view):
+        return {"status": filters["status"], "q": filters["query"], "view": view,
+                "hide_parked": "1" if filters["hide_parked"] else "0",
+                "include_seeds": "1" if filters["include_seeds"] else "0"}
+
+    @app.get("/")
+    def dashboard():
+        projects = []
+        all_counts = {"total": 0, **{status: 0 for status in DOMAIN_LABELS}}
+        for item in service.store.list_projects():
+            project = dict(item)
+            project["counts"] = service.store.domain_counts(project["id"])
+            for key in all_counts:
+                all_counts[key] += project["counts"].get(key, 0)
+            projects.append(project)
+        tools = service.tool_status()
+        return render_template("dashboard.html", projects=projects, counts=all_counts,
+                               tools=tools, form={}, page="overview")
+
+    @app.get("/health")
+    def health():
+        return {"status": "ok"}
+
+    @app.post("/projects")
+    def create_project():
+        name = request.form.get("name", "").strip()
+        roots_text = request.form.get("roots", "")
+        try:
+            if not name or len(name) > 120:
+                raise ValueError("Give your project a name between 1 and 120 characters.")
+            roots = parse_domains(roots_text)
+            if not roots:
+                raise ValueError("Add at least one root domain.")
+            if len(roots) > 500:
+                raise ValueError("Add no more than 500 root domains to one project.")
+            project = service.create_project(name, roots)
+        except ValueError as error:
+            flash(str(error), "error")
+            # Keep submitted values without embedding them in a redirect URL.
+            return render_template("create.html", form={"name": name, "roots": roots_text}, page="new"), 400
+        flash("Project created. Start a scan to establish its first baseline.", "success")
+        return redirect(url_for("project_detail", project_id=project["id"]), code=303)
+
+    @app.get("/projects/<uuid:project_id>")
+    def project_detail(project_id):
+        project = project_or_404(project_id)
+        counts = service.store.domain_counts(str(project_id))
+        filters = selected_filters()
+        view = selected_view()
+        query, status, seed = filters["query"], filters["status"], filters["seed"]
+        include_seeds, hide_parked = filters["include_seeds"], filters["hide_parked"]
+        page_text = request.args.get("page", "1")
+        if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8:
+            abort(400, description="Choose a valid inventory page number.")
+        page_number = max(1, int(page_text))
+        page_size = 100
+        result = service.store.query_domains(str(project_id), **filters,
+                                             limit=page_size, offset=(page_number - 1) * page_size)
+        page_count = max(1, (result["total"] + page_size - 1) // page_size)
+        if page_number > page_count:
+            page_number = page_count
+            result = service.store.query_domains(str(project_id), **filters,
+                                                 limit=page_size, offset=(page_number - 1) * page_size)
+        groups = service.store.source_groups(str(project_id), query=query, status=status,
+                                             hide_parked=hide_parked, include_seeds=include_seeds)
+        # Roots act as section labels; related discovered subdomains stay beside them.
+        source_sections = [{"root": root, "groups": []} for root in project["roots"]]
+        other_sources = []
+        for group in groups:
+            matches = [section for section in source_sections
+                       if group["seed"] == section["root"] or group["seed"].endswith("." + section["root"])]
+            if matches:
+                max(matches, key=lambda section: len(section["root"]))["groups"].append(group)
+            else:
+                other_sources.append(group)
+        source_sections = [section for section in source_sections if section["groups"]]
+        if other_sources:
+            source_sections.append({"root": "Other sources", "groups": other_sources})
+        for section in source_sections:
+            section["groups"].sort(key=lambda group: (group["seed"] != section["root"], group["seed"]))
+        source_total = (service.store.query_domains(str(project_id), **{**filters, "seed": ""}, limit=1)["total"]
+                        if seed else result["total"])
+        default_count = service.store.query_domains(str(project_id), status="resolved", include_seeds=False, limit=1)["total"]
+        filter_params = filter_parameters(filters, view)
+        runs = project_runs(project_id)
+        last_run = project.get("last_run") or (runs[0] if runs else None)
+        return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
+                               counts=counts, query=query, status_filter=status,
+                               runs=runs, last_run=last_run, page="project",
+                               demo=bool(last_run and "demo" in last_run.get("source_status", {})),
+                               page_number=page_number, page_count=page_count,
+                               filtered_count=result["total"], offset=(page_number - 1) * page_size,
+                               include_seeds=include_seeds, hide_parked=hide_parked,
+                               seed_filter=seed, source_sections=source_sections,
+                               source_group_count=len(groups), source_total=source_total,
+                               default_count=default_count, hidden_count=counts["total"] - default_count,
+                               filter_params=filter_params, view=view,
+                               gallery_params={**filter_params, "view": "gallery"},
+                               table_params={**filter_params, "view": "table"},
+                               has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved"))
+
+    @app.get("/projects/<uuid:project_id>/candidates/<domain>")
+    def candidate_detail(project_id, domain):
+        project = project_or_404(project_id)
+        try:
+            domain = normalize_domain(domain)
+        except ValueError:
+            abort(404, description="This candidate could not be found.")
+        candidate = service.store.get_domain(str(project_id), domain)
+        if candidate is None:
+            abort(404, description="This candidate could not be found in this project.")
+        filters, view = selected_filters(), selected_view()
+        references = []
+        for source in candidate.get("sources", [])[:6]:
+            if source == domain:
+                continue
+            try:
+                reference = service.store.get_domain(str(project_id), normalize_domain(source))
+            except ValueError:
+                continue
+            if reference:
+                references.append(_prepare_domain(reference))
+        candidate = _prepare_domain(candidate)
+        comparisons = []
+        assessments = []
+        for capture in candidate.get("screenshots", []):
+            if not isinstance(capture, dict):
+                continue
+            analysis = capture.get("analysis")
+            if isinstance(analysis, dict) and analysis:
+                assessments.append({"scheme": capture.get("scheme", ""), "analysis": analysis,
+                                    "captured_at": capture.get("captured_at")})
+            visual = capture.get("visual") or {}
+            previous_run = visual.get("previous_run_id")
+            if capture.get("status") != "captured" or not previous_run or capture.get("scheme") not in {"http", "https"}:
+                continue
+            try:
+                previous_run = str(UUID(previous_run))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if previous_run == capture.get("run_id"):
+                continue
+            previous = service.store.get_capture(previous_run, domain, capture["scheme"])
+            if (previous and previous.get("status") == "captured" and previous.get("domain") == domain
+                    and previous.get("project_id") == str(project_id) and previous.get("scheme") == capture["scheme"]
+                    and previous.get("run_id") == previous_run):
+                comparisons.append({"scheme": capture["scheme"], "before": previous, "after": capture,
+                                    "change": visual.get("change", "uncertain"), "distance": visual.get("distance")})
+        return render_template("candidate.html", project=project, candidate=candidate,
+                               captures=service.store.list_captures(str(project_id), domain, limit=20),
+                               references=references, comparisons=comparisons, assessments=assessments,
+                               last_run=project.get("last_run"), filter_params=filter_parameters(filters, view),
+                               seed_filter=filters["seed"], page="candidate",
+                               demo=bool(project.get("last_run") and "demo" in project["last_run"].get("source_status", {})))
+
+    @app.get("/captures/<uuid:run_id>/<domain>/<scheme>")
+    def capture_image(run_id, domain, scheme):
+        if scheme not in {"http", "https"}:
+            abort(404)
+        try:
+            domain = normalize_domain(domain)
+        except ValueError:
+            abort(404)
+        capture = service.store.get_capture(str(run_id), domain, scheme)
+        run = service.store.get_run(str(run_id))
+        if (not capture or not run or capture.get("status") != "captured"
+                or capture.get("run_id") != str(run_id) or capture.get("domain") != domain
+                or capture.get("scheme") != scheme or capture.get("project_id") != run["project_id"]):
+            abort(404, description="This capture could not be found.")
+        relative = capture.get("relative_path")
+        if not isinstance(relative, str) or not relative or "\\" in relative:
+            abort(404)
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or any(part in {".", ".."} for part in relative_path.parts):
+            abort(404)
+        suffix = relative_path.suffix.lower()
+        if suffix not in {".png", ".jpg", ".jpeg"}:
+            abort(404)
+        stream = None
+        try:
+            runs_dir = Path(service.data_dir).resolve() / "runs"
+            run_dir = runs_dir / str(run_id)
+            if runs_dir.is_symlink() or run_dir.is_symlink():
+                abort(404)
+            capture_path = run_dir
+            for part in relative_path.parts:
+                capture_path /= part
+                if capture_path.is_symlink():
+                    abort(404)
+            resolved = capture_path.resolve(strict=True)
+            if not resolved.is_relative_to(run_dir.resolve(strict=True)) or not resolved.is_file():
+                abort(404)
+            descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            stream = os.fdopen(descriptor, "rb")
+            signature = stream.read(12)
+            png = suffix == ".png" and signature.startswith(b"\x89PNG\r\n\x1a\n")
+            jpeg = suffix in {".jpg", ".jpeg"} and signature.startswith(b"\xff\xd8\xff")
+            if not (png or jpeg):
+                stream.close()
+                abort(404, description="This capture is not a supported image.")
+            stream.seek(0)
+            response = send_file(stream, mimetype="image/png" if png else "image/jpeg",
+                                 download_name=f"{domain}-{scheme}{suffix}", etag=False)
+            response.call_on_close(stream.close)
+            return response
+        except (OSError, RuntimeError, ValueError):
+            if stream is not None:
+                stream.close()
+            abort(404, description="The saved capture file is unavailable.")
+
+    @app.post("/projects/<uuid:project_id>/scan")
+    def scan_project(project_id):
+        project_or_404(project_id)
+        try:
+            run = service.submit_scan(str(project_id))
+        except RuntimeError as error:
+            abort(409, description=str(error))
+        except ValueError as error:
+            abort(400, description=str(error))
+        return redirect(url_for("run_detail", run_id=run["id"]), code=303)
+
+    @app.get("/runs/<uuid:run_id>")
+    def run_detail(run_id):
+        try:
+            run = service.store.get_run(str(run_id))
+        except KeyError:
+            run = None
+        if run is None:
+            abort(404, description="This scan could not be found.")
+        project = project_or_404(run["project_id"])
+        handoff = review_selection(service.store, str(run_id)) if run["status"] in {"completed", "partial"} else None
+        return render_template("run.html", project=project, run=run, page="run",
+                               demo="demo" in run.get("source_status", {}), handoff=handoff,
+                               handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
+                                               "unchanged": "Unchanged images", "uncertain": "Uncertain comparisons",
+                                               "duplicate": "Duplicate protocol pairs", "parked": "Likely parked",
+                                               "reviewed": "Already reviewed"})
+
+    @app.get("/projects/<uuid:project_id>/export.csv")
+    def export_project(project_id):
+        project_or_404(project_id)
+        filters = selected_filters()
+        output = io.StringIO(newline="")
+        writer = csv.writer(output)
+        writer.writerow(["domain", "status", "latest_observation", "last_known_records", "first_seen", "last_seen", "last_checked", "missing_count", "last_error", "source_domains", "is_original", "parking_status", "parking_provider", "parking_evidence"])
+        for domain in service.store.export_domains(str(project_id), **filters):
+            record_text = "; ".join(f"{kind} {value}".strip() for kind, value in _records(domain.get("records")))
+            parking = domain.get("parking") or {}
+            evidence = parking.get("evidence", "")
+            if isinstance(evidence, list):
+                evidence = "; ".join(map(str, evidence))
+            values = [domain.get("domain"), domain.get("status"), domain.get("latest_observation"), record_text,
+                      domain.get("first_seen"), domain.get("last_seen"), domain.get("last_checked"),
+                      domain.get("missing_count", 0), domain.get("last_error"),
+                      "; ".join(domain.get("sources", [])), domain.get("is_seed", False),
+                      parking.get("status", "unknown"), parking.get("provider"), evidence]
+            writer.writerow([_csv_cell(value) for value in values])
+        return Response(output.getvalue(), mimetype="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="domain-findings-{project_id}.csv"',
+        })
+
+    for error_code in (400, 404, 409, 413):
+        def handle_error(error):
+            messages = {400: "Check your request", 404: "Page not found", 409: "Scan already in progress", 413: "The form is too large"}
+            return render_template("error.html", title=messages[error.code],
+                                   message=error.description, code=error.code, page="error"), error.code
+        app.register_error_handler(error_code, handle_error)
+
+    from .automation import create_automation_blueprint
+    app.register_blueprint(create_automation_blueprint(service))
+    return app

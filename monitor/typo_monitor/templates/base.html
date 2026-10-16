@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{% block title %}Overview{% endblock %} · Typo Watch</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body{% if run is defined and run.status == 'running' %} data-refresh="true"{% endif %}>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a class="brand" href="{{ url_for('dashboard') }}"><span class="brand-mark" aria-hidden="true">t<span>·</span></span><span>typo<span class="brand-light">watch</span></span></a>
+    <div class="workspace-label">MONITORING WORKSPACE</div>
+    <nav>
+      <a class="nav-link {% if page == 'overview' %}active{% endif %}" href="{{ url_for('dashboard') }}"{% if page == 'overview' %} aria-current="page"{% endif %}><span aria-hidden="true">▦</span> Overview</a>
+      <a class="nav-link {% if page == 'new' %}active{% endif %}" href="{{ url_for('dashboard') }}#new-project"><span aria-hidden="true">＋</span> New project</a>
+    </nav>
+    <div class="sidebar-note"><span class="status-dot"></span><strong>Your data, your server</strong><p>Persistent inventory.<br>Changes backed by evidence.</p></div>
+    <div class="sidebar-footer">DOMAIN MONITORING <span>v3</span></div>
+  </aside>
+  <div class="app-shell">
+    <header class="topbar"><div class="breadcrumbs"><a href="{{ url_for('dashboard') }}">Workspace</a><span>/</span>{% block breadcrumb %}Overview{% endblock %}</div><span class="local-badge"><span class="status-dot"></span> Self-hosted</span></header>
+    <main id="main" tabindex="-1">
+      {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="notice {{ category }}" role="status">{{ message }}</div>{% endfor %}{% endwith %}
+      {% block content %}{% endblock %}
+      <footer class="page-footer"><span>Typo Watch</span><span>Discovery is intermittent. Your inventory should not be.</span></footer>
+    </main>
+  </div>
+</body>
+</html>

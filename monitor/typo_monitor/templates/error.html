@@ -1,0 +1,4 @@
+{% extends 'base.html' %}
+{% block title %}{{ title }}{% endblock %}
+{% block breadcrumb %}{{ code }}{% endblock %}
+{% block content %}<div class="error-page"><span class="eyebrow">{{ code }}</span><h1>{{ title }}</h1><p>{{ message }}</p><a class="button primary" href="{{ url_for('dashboard') }}">Return to overview →</a></div>{% endblock %}

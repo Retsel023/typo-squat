@@ -1,0 +1,8 @@
+# Only application source and dependency declarations enter the build context.
+*
+!requirements.txt
+!requirements.lock
+!typo_monitor/
+!typo_monitor/**
+typo_monitor/**/__pycache__/
+typo_monitor/**/*.py[cod]
