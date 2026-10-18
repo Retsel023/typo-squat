@@ -206,6 +206,7 @@ python -m typo_monitor --data-dir /srv/typo-monitor --resolver 1.1.1.1 serve --i
 python -m typo_monitor --data-dir ./data --no-discovery scan --name Example --domains domainlists/example.txt
 python -m typo_monitor --data-dir ./data projects
 python -m typo_monitor --data-dir ./data scan --project PROJECT_UUID
+python -m typo_monitor --data-dir ./data scan --project PROJECT_UUID --discovery-mode cached
 python -m typo_monitor --discovery-engine subfinder --discovery-timeout 600 serve
 ```
 
@@ -215,6 +216,16 @@ New clients inherit the server's `--interval-hours` default until a client inter
 is saved. An explicit manual/off setting also overrides a positive server default. Per-client intervals and next due times
 persist in SQLite; they survive a restart. A manual scan advances that client's
 next due time so it is not immediately followed by a scheduled duplicate.
+
+The **Subdomains** selector beside **Start scan** chooses whether to enumerate
+again or **Use saved inventory**. Saved inventory skips enumeration and typo
+generation; every saved candidate still receives fresh DNS checks, including
+previously non-resolving candidates. A project needs saved candidates first.
+**Default scan mode** in the schedule form is persisted for scheduled scans
+and preselected for manual scans. Save it with an interval of 0 to keep scans
+manual. The chosen mode is frozen when each run is queued and shown in run
+details. Select enumeration periodically to discover new seeds or apply a new
+generation profile. See [scan modes](../docs/DISCOVERY.md#choosing-whether-to-enumerate).
 
 The server must remain running for schedules to execute. The scheduler checks
 for due clients periodically, skips clients that are already queued/running and

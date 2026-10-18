@@ -35,7 +35,7 @@ def create_automation_blueprint(service):
         return run
 
     def run_status(run):
-        return {key: run.get(key) for key in ("id", "project_id", "status", "started_at", "finished_at", "counts", "error")}
+        return {key: run.get(key) for key in ("id", "project_id", "status", "started_at", "finished_at", "counts", "error", "discovery_mode")}
 
     @bp.get("/projects")
     def projects():
@@ -51,7 +51,12 @@ def create_automation_blueprint(service):
         if service.store.get_project(project_id) is None:
             abort(404, description="Project not found.")
         try:
-            return jsonify(run_status(service.submit_scan(project_id))), 202
+            mode = body.get("discovery_mode")
+            if "discovery_mode" in body and mode is None:
+                raise ValueError("discovery_mode must be enumerate or cached when supplied.")
+            run = (service.submit_scan(project_id, discovery_mode=mode) if mode is not None
+                   else service.submit_scan(project_id))
+            return jsonify(run_status(run)), 202
         except RuntimeError as exc:
             abort(409, description=str(exc))
         except ValueError as exc:

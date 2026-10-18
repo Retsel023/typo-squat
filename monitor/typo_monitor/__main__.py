@@ -57,6 +57,8 @@ def parser():
     server.add_argument("--port", type=int, default=5000)
     server.add_argument("--interval-hours", type=float, default=0, help="Scan each project at this cadence; 0 means manual")
     scan = commands.add_parser("scan", help="Run one scan; reuse a named project with the same roots")
+    scan.add_argument("--discovery-mode", choices=["enumerate", "cached"],
+                      help="Enumerate subdomains again or reuse saved candidates; defaults to the project's saved mode")
     target = scan.add_mutually_exclusive_group(required=True)
     target.add_argument("--project", help="Existing project UUID")
     target.add_argument("--name", help="Create/reuse a named project (also requires --domains)")
@@ -170,7 +172,7 @@ def main(argv=None):
                     project = matches[0] if matches else service.create_project(args.name, roots)
                     if project["roots"] != roots:
                         p.error("That project has different roots. Use a new name to establish a separate baseline.")
-                result = service.scan_now(project["id"])
+                result = service.scan_now(project["id"], discovery_mode=args.discovery_mode)
                 print(json.dumps(result, indent=2))
                 return 0 if result["status"] == "completed" else 2
             elif args.command == "serve":

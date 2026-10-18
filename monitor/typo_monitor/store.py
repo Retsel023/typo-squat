@@ -29,7 +29,7 @@ def _json(value) -> str:
 
 class Store:
     _RUN_SUMMARY_COLUMNS = ("id,project_id,status,started_at,finished_at,is_baseline,"
-                            "'[]' AS events_json,counts_json,source_status_json,error,dns_workers")
+                            "'[]' AS events_json,counts_json,source_status_json,error,dns_workers,discovery_mode")
     _STATE_QUERY = """SELECT d.*,
         EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id
             AND i.domain=d.domain AND i.kind='seed') AS is_seed,
@@ -49,7 +49,8 @@ class Store:
                     roots_json TEXT NOT NULL, created_at TEXT NOT NULL,
                     baseline_run_id TEXT, comparison_scope_json TEXT,
                     schedule_interval_hours REAL DEFAULT NULL,
-                    schedule_next_run_at TEXT, dns_workers INTEGER
+                    schedule_next_run_at TEXT, dns_workers INTEGER,
+                    discovery_mode TEXT NOT NULL DEFAULT 'enumerate'
                 );
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
@@ -58,7 +59,7 @@ class Store:
                     events_json TEXT NOT NULL DEFAULT '[]',
                     counts_json TEXT NOT NULL DEFAULT '{}',
                     source_status_json TEXT NOT NULL DEFAULT '{}', error TEXT,
-                    dns_workers INTEGER
+                    dns_workers INTEGER, discovery_mode TEXT
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS one_running_scan
                     ON runs(project_id) WHERE status = 'running';
@@ -131,9 +132,13 @@ class Store:
                 db.execute("ALTER TABLE projects ADD COLUMN schedule_next_run_at TEXT")
             if "dns_workers" not in columns:
                 db.execute("ALTER TABLE projects ADD COLUMN dns_workers INTEGER")
+            if "discovery_mode" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN discovery_mode TEXT NOT NULL DEFAULT 'enumerate'")
             run_columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)")}
             if "dns_workers" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN dns_workers INTEGER")
+            if "discovery_mode" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN discovery_mode TEXT")
             db.execute("""CREATE INDEX IF NOT EXISTS project_schedule_due ON projects(schedule_next_run_at)
                 WHERE schedule_interval_hours>0""")
             capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
@@ -378,19 +383,32 @@ class Store:
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("Schedule time must be an aware ISO date or datetime.") from exc
 
-    def set_schedule(self, project_id, interval_hours):
+    @staticmethod
+    def _discovery_mode(mode):
+        if not isinstance(mode, str) or mode not in {"enumerate", "cached"}:
+            raise ValueError("Choose enumerate or cached for discovery_mode.")
+        return mode
+
+    def set_schedule(self, project_id, interval_hours, *, discovery_mode=None):
         """Persist an independent cadence: 0 disables, otherwise 1–8760 hours."""
         if (not isinstance(interval_hours, (int, float)) or isinstance(interval_hours, bool)
                 or (interval_hours != 0 and not 1 <= interval_hours <= 8760)
                 or not math.isfinite(interval_hours)):
             raise ValueError("Schedule interval must be 0 (off) or between 1 and 8760 hours.")
         interval = float(interval_hours)
+        if discovery_mode is not None:
+            discovery_mode = self._discovery_mode(discovery_mode)
         next_at = ((self._schedule_now() + timedelta(hours=interval)).isoformat(timespec="microseconds")
                    if interval else None)
         with self._connection(write=True) as db:
             self._require_project(db, project_id)
+            if discovery_mode == "cached" and not db.execute(
+                    "SELECT 1 FROM inventory WHERE project_id=? AND kind='candidate' LIMIT 1", (project_id,)).fetchone():
+                raise ValueError("No saved candidate inventory yet. Run an enumeration scan first.")
             db.execute("UPDATE projects SET schedule_interval_hours=?,schedule_next_run_at=? WHERE id=?",
                        (interval, next_at, project_id))
+            if discovery_mode is not None:
+                db.execute("UPDATE projects SET discovery_mode=? WHERE id=?", (discovery_mode, project_id))
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
     def due_projects(self, now=None):
@@ -449,6 +467,13 @@ class Store:
             return {"seeds": [r["domain"] for r in rows if r["kind"] == "seed"],
                     "candidates": [r["domain"] for r in rows if r["kind"] == "candidate"]}
 
+    def has_candidate_inventory(self, project_id):
+        """Check cache availability without loading a large candidate list."""
+        with self._connection() as db:
+            self._require_project(db, project_id)
+            return db.execute("SELECT 1 FROM inventory WHERE project_id=? AND kind='candidate' LIMIT 1",
+                              (project_id,)).fetchone() is not None
+
     @staticmethod
     def _generation_signature(signature):
         if not isinstance(signature, str) or not signature.strip() or len(signature) > 4096:
@@ -467,16 +492,20 @@ class Store:
             return {row[0] for row in db.execute(
                 "SELECT seed FROM generation_markers WHERE project_id=? AND signature=?", (project_id, signature))}
 
-    def start_run(self, project_id, *, dns_workers=None):
+    def start_run(self, project_id, *, dns_workers=None, discovery_mode=None):
         dns_workers = self._dns_workers(dns_workers)
         with self._connection(write=True) as db:
             project = self._require_project(db, project_id)
             workers = self._dns_workers(project["dns_workers"] if dns_workers is None else dns_workers)
+            mode = self._discovery_mode(project["discovery_mode"] if discovery_mode is None else discovery_mode)
+            if mode == "cached" and not db.execute(
+                    "SELECT 1 FROM inventory WHERE project_id=? AND kind='candidate' LIMIT 1", (project_id,)).fetchone():
+                raise ValueError("No saved candidate inventory yet. Run an enumeration scan first.")
             if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
                 raise RuntimeError("A scan is already running for this project.")
             run_id = str(uuid4())
-            db.execute("INSERT INTO runs(id,project_id,status,started_at,dns_workers) VALUES(?,?, 'running', ?,?)",
-                       (run_id, project_id, _now(), workers))
+            db.execute("INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode) VALUES(?,?, 'running', ?,?,?)",
+                       (run_id, project_id, _now(), workers, mode))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     @staticmethod

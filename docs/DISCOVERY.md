@@ -14,6 +14,47 @@ engine is unavailable or fails, the scan still checks roots and retained
 inventory. Selecting a single engine never silently substitutes another tool.
 Stop scan signals every running discovery process group and waits for cleanup.
 
+## Choosing whether to enumerate
+
+The project page's **Subdomains** selector applies to the next manual scan:
+
+- **Enumerate again** runs the configured discovery engines, merges their names
+  with saved seeds, and generates only seeds missing from the current generation
+  cache. All saved and newly generated candidates receive fresh DNS checks.
+- **Use saved inventory** skips every enumerator and AIL generation, including
+  generation-profile checks. It sends the saved candidate inventory and seeds
+  straight to fresh DNS checks. Negative/uncertain candidates are included again;
+  this mode does not reuse old DNS answers. Normal website checks, screenshots
+  and local comparisons still follow for eligible results.
+
+Saved inventory must already exist. An attempt that failed or was cancelled
+before accepting candidates does not establish a cache. Runs completed with
+gaps can still have saved candidates even when their DNS observations were
+uncertain. Reusing those names does not repair the DNS failure that produced
+the uncertainty; the next scan makes fresh requests.
+
+**Default scan mode** under **Scan schedule** persists the project's choice for
+scheduled scans and preselects manual scans. It can be saved with scheduling off.
+Each queued run snapshots its mode, and run details show that original choice.
+Changing a default does not alter a queued or running scan. Existing projects
+start with enumeration enabled; historical runs without a recorded mode are
+shown as unrecorded.
+
+The CLI accepts a per-scan override after the `scan` command:
+
+```sh
+python -m typo_monitor --data-dir ./data scan --project PROJECT_UUID --discovery-mode cached
+python -m typo_monitor --data-dir ./data scan --project PROJECT_UUID --discovery-mode enumerate
+```
+
+Omitting it uses the project's saved default. Server-wide `--no-discovery`
+continues to disable enumerators while allowing generation from known seeds;
+it is distinct from `cached`, which skips both operations. To pick up new
+subdomains or a changed generation profile, choose enumeration again. The
+configured candidate limit still applies to cached runs.
+
+## Engine configuration
+
 Global options go before the CLI command:
 
 ```sh

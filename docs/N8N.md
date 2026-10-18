@@ -49,7 +49,7 @@ A loop bounds simultaneous work; n8n may still hold previous node outputs for an
 
 | Request | Result |
 | --- | --- |
-| `POST /api/scans` with `{"project_id":"UUID"}` | A run object containing `id`, `project_id`, and `status`. |
+| `POST /api/scans` with `{"project_id":"UUID"}` | A run object containing `id`, `project_id`, `status`, and `discovery_mode`. Optional `"discovery_mode":"cached"` skips enumeration/generation; `"enumerate"` refreshes discovery. Omitting the field uses the project's saved default. |
 | `GET /api/runs/UUID` | Run status: `running`, `completed`, `partial`, `failed`, or `cancelled`. Completed and partial runs can provide captured evidence. |
 | `GET /api/runs/UUID/review?limit=5&offset=0&include_reviewed=1` | Metadata-only `run_id`, `items`, and `next_offset`. Review admits only `new`/`changed` pairs with a captured current image. |
 | `GET /api/runs/UUID/review?include_images=1&domain=example.com&scheme=https&limit=1&offset=0&include_reviewed=1` | One pair with current and optional previous `image_data_url`, plus available owned references. Domain and scheme are required for inline images. |

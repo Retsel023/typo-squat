@@ -67,6 +67,15 @@ schedule enabled. Stopping restarts its interval from the cancellation time,
 preventing an overdue scan from immediately restarting. Disable the schedule
 separately when desired. Simulated demo projects are never automatically scanned.
 
+Choose **Use saved inventory** in the **Subdomains** selector beside **Start
+scan** to skip Amass, Subfinder, Assetfinder and typo generation. Saved candidates
+are queried again, including non-resolving ones; fresh DNS results still decide
+which websites qualify for capture. This choice needs an existing saved candidate
+inventory. **Enumerate again** refreshes discovery and generates only uncached
+seeds. **Default scan mode** under **Scan schedule** saves the project's choice
+for scheduled scans and preselects manual scans, including when scheduling is
+off. Each queued scan keeps its selected mode.
+
 Choose **DNS concurrency** when creating a client, or save it on the client's page
 before starting a scan. Use 20 for up to 20 simultaneous DNS questions with MassDNS; the supported
 range is 1–128. A blank setting follows the server default of 24. This setting

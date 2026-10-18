@@ -34,8 +34,12 @@
   {% if values %}<div class="records">{% for type, value in values %}<span class="record"><b>{{ type }}</b> {{ value }}</span>{% endfor %}</div>{% else %}<span class="muted">No known records</span>{% endif %}
 {% endmacro %}
 {% macro scan_button(project, running=false, demo=false) %}
-<form method="post" action="{{ url_for('scan_project', project_id=project.id) }}" class="inline-form">
+<form method="post" action="{{ url_for('scan_project', project_id=project.id) }}" class="inline-form scan-launch">
   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label class="scan-mode-control"><span>Subdomains</span><select name="discovery_mode" aria-label="Subdomain discovery for this scan"{% if running or demo %} disabled{% endif %}>
+    <option value="enumerate"{% if discovery_settings.mode == 'enumerate' %} selected{% endif %}>{% if discovery_settings.enumeration_enabled %}Enumerate again{% else %}Generate from known seeds{% endif %}</option>
+    <option value="cached"{% if discovery_settings.mode == 'cached' %} selected{% endif %}{% if not discovery_settings.cached_available %} disabled{% endif %}>Use saved inventory</option>
+  </select></label>
   <button class="button primary" type="submit"{% if running or demo %} disabled{% endif %}><span aria-hidden="true">{% if running %}◌{% else %}↻{% endif %}</span> {% if demo %}Demo · read only{% elif running %}Scan in progress{% else %}Start scan{% endif %}</button>
 </form>
 {% endmacro %}

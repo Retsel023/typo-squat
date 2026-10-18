@@ -147,6 +147,11 @@ class MonitorService:
         return {"workers": self.dns_workers if configured is None else configured,
                 "inherited": configured is None}
 
+    def discovery_status(self, project):
+        return {"mode": project.get("discovery_mode", "enumerate"),
+                "cached_available": self.store.has_candidate_inventory(project["id"]),
+                "enumeration_enabled": self.discovery}
+
     def tool_status(self):
         tools = {}
         for label, package in (("AIL generator", "ail-typo-squatting"), ("DNS support", "dnspython")):
@@ -211,7 +216,7 @@ class MonitorService:
             self._progress.pop(run_id, None)
             LOG.exception("Could not record live progress for %s", run_id)
 
-    def submit_scan(self, project_id, *, _scheduled=False):
+    def submit_scan(self, project_id, *, discovery_mode=None, _scheduled=False):
         with self._mutex:
             if self._closed.is_set():
                 raise RuntimeError("The scan worker is shutting down.")
@@ -224,9 +229,14 @@ class MonitorService:
                 return None
             if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
                 raise RuntimeError("This is an offline simulated project. Create a separate project for real scans.")
+            mode = Store._discovery_mode(project.get("discovery_mode", "enumerate")
+                                         if discovery_mode is None else discovery_mode)
+            if mode == "cached" and not self.store.has_candidate_inventory(project_id):
+                raise ValueError("No saved candidate inventory yet. Run an enumeration scan first.")
             scope = self.resolver.comparison_scope() if hasattr(self.resolver, "comparison_scope") else {"resolver": "injected"}
             self.store.bind_comparison_scope(project_id, scope)
-            run = self.store.start_run(project_id, dns_workers=self.dns_status(project)["workers"])
+            run = self.store.start_run(project_id, dns_workers=self.dns_status(project)["workers"],
+                                       discovery_mode=mode)
             requested = self._cancel_events[run["id"]] = threading.Event()
             try:
                 self._progress[run["id"]] = RunProgress(self.data_dir, run["id"])
@@ -273,8 +283,8 @@ class MonitorService:
                 self._progress.pop(run_id, None)
             return result
 
-    def scan_now(self, project_id):
-        run = self.submit_scan(project_id)
+    def scan_now(self, project_id, *, discovery_mode=None):
+        run = self.submit_scan(project_id, discovery_mode=discovery_mode)
         with self._mutex:
             future = self._futures.get(run["id"])
         if future:
@@ -311,17 +321,28 @@ class MonitorService:
             workdir.mkdir(parents=True)
             project = self.store.get_project(project_id)
             old = self.store.inventory(project_id)
+            mode = run.get("discovery_mode") or "enumerate"
+            reuse_inventory = mode == "cached"
             engine = getattr(self.discoverer, "name", type(self.discoverer).__name__)
-            report("discovery", f"Discovering subdomains with {engine} for {len(project['roots'])} root domains.",
-                   current=0, total=len(project["roots"]))
-            LOG.info("Run %s: discovery starting with %s for %d roots", run_id, engine, len(project["roots"]))
-            if self.discovery:
+            if reuse_inventory:
+                if not old["candidates"]:
+                    raise ValueError("No saved candidate inventory yet. Run an enumeration scan first.")
+                discovered = []
+                source_status["discovery"] = {"status": "skipped", "engine": engine, "mode": mode,
+                    "detail": "Using saved seeds and candidate inventory; no subdomain enumerators were started."}
+                report("discovery", f"Using saved inventory: {len(old['seeds']):,} seeds and "
+                       f"{len(old['candidates']):,} candidates. Subdomain enumeration and typo generation are skipped.")
+            elif self.discovery:
+                report("discovery", f"Discovering subdomains with {engine} for {len(project['roots'])} root domains.",
+                       current=0, total=len(project["roots"]))
+                LOG.info("Run %s: discovery starting with %s for %d roots", run_id, engine, len(project["roots"]))
                 discovered, source_status["discovery"] = self.discoverer.discover(project["roots"], workdir)
                 source_status["discovery"].setdefault("engine", engine)
             else:
                 discovered = []
                 source_status["discovery"] = {"status": "skipped", "engine": engine,
                                               "detail": "Discovery explicitly disabled; retained seeds still checked."}
+            source_status["discovery"]["mode"] = mode
             # Enforce the discovery boundary independently of each tool's
             # parser. Raw Amass graph assets are never seeds or DNS evidence.
             # This scope restriction does not apply to generated typo domains,
@@ -342,22 +363,27 @@ class MonitorService:
                 rejected_invalid_names=invalid_names, rejected_out_of_scope=outside_scope)
             (workdir / "discovery-hostnames.txt").write_text(
                 "".join(domain + "\n" for domain in discovered), encoding="utf-8")
-            report("discovery", f"Accepted {len(discovered):,} unique in-scope discovery hostnames; "
-                   "IP addresses and infrastructure assets cannot become seeds. Fresh DNS checks follow generation.",
-                   metrics={"accepted_hostnames": len(discovered), "rejected_invalid_names": invalid_names,
-                            "rejected_out_of_scope": outside_scope})
+            if not reuse_inventory:
+                report("discovery", f"Accepted {len(discovered):,} unique in-scope discovery hostnames; "
+                       "IP addresses and infrastructure assets cannot become seeds. Fresh DNS checks follow generation.",
+                       metrics={"accepted_hostnames": len(discovered), "rejected_invalid_names": invalid_names,
+                                "rejected_out_of_scope": outside_scope})
             seeds = sorted(set(project["roots"]) | set(old["seeds"]) | set(discovered))
             self._check_shutdown()
             # Generation is deterministic per seed/profile. The candidate and
             # source inventory is already durable; only ungenerated seeds need
             # permutations. Unknown adapters must explicitly opt in to caching.
-            signature_method = getattr(self.generator, "cache_signature", None)
+            signature_method = None if reuse_inventory else getattr(self.generator, "cache_signature", None)
             signature = signature_method() if callable(signature_method) else None
-            cached = self.store.generation_cache(project_id, signature) if callable(signature_method) else set()
+            if reuse_inventory:
+                cached = set(seeds)
+            else:
+                cached = self.store.generation_cache(project_id, signature) if callable(signature_method) else set()
             pending = [seed for seed in seeds if seed not in cached]
-            report("generation", f"Generating {len(pending)} seeds; reusing {len(seeds) - len(pending)} cached seeds.",
-                   current=0, total=len(pending), metrics={"reused_seeds": len(seeds) - len(pending)})
-            LOG.info("Run %s: generation starting for %d seeds; reusing %d", run_id, len(pending), len(seeds) - len(pending))
+            if not reuse_inventory:
+                report("generation", f"Generating {len(pending)} seeds; reusing {len(seeds) - len(pending)} cached seeds.",
+                       current=0, total=len(pending), metrics={"reused_seeds": len(seeds) - len(pending)})
+                LOG.info("Run %s: generation starting for %d seeds; reusing %d", run_id, len(pending), len(seeds) - len(pending))
             generated, provenance, generation = [], {}, None
             if pending:
                 generated, generator_status = self.generator.generate(pending, workdir)
@@ -368,7 +394,9 @@ class MonitorService:
                 generator_status["detail"] = (generator_status.get("detail", "Permutation generation completed.")
                     + f" Generated {len(pending)} seeds; reused {len(seeds) - len(pending)} previously generated seeds.")
             else:
-                generator_status = {"status": "ok", "detail": "All seeds were already generated with this profile; reused saved candidate inventory."}
+                generator_status = ({"status": "skipped", "detail": "Reused the saved candidate list without invoking AIL. "
+                    "Choose enumeration to discover new seeds or apply a changed generation profile."} if reuse_inventory else
+                    {"status": "ok", "detail": "All seeds were already generated with this profile; reused saved candidate inventory."})
             source_status["generator"] = {**generator_status, "generated_seeds": len(pending),
                                            "reused_seeds": len(seeds) - len(pending), "signature": signature}
             self._check_shutdown()
@@ -377,9 +405,11 @@ class MonitorService:
             (workdir / "generation.json").write_text(json.dumps({"signature": signature, "generated_seeds": pending,
                 "reused_seeds": [seed for seed in seeds if seed in cached], "seed_count": len(seeds),
                 "generated_candidates": len(generated), "retained_candidates": len(old["candidates"]),
-                "candidate_count": len(candidates), "candidate_limit": self.max_candidates}, indent=2), encoding="utf-8")
-            report("generation", f"Generation finished for {len(pending):,} hostname seeds; "
-                   f"{len(candidates):,} unique candidate hostnames await DNS checks.",
+                "candidate_count": len(candidates), "candidate_limit": self.max_candidates,
+                "discovery_mode": mode}, indent=2), encoding="utf-8")
+            report("generation", (f"Reusing {len(candidates):,} saved candidate hostnames; fresh DNS checks follow."
+                   if reuse_inventory else f"Generation finished for {len(pending):,} hostname seeds; "
+                   f"{len(candidates):,} unique candidate hostnames await DNS checks."),
                    current=len(pending), total=len(pending), metrics={"seed_count": len(seeds),
                    "reused_seeds": len(seeds) - len(pending), "candidate_count": len(candidates),
                    "candidate_limit": self.max_candidates})

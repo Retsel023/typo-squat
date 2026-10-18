@@ -347,6 +347,9 @@ def create_app(service):
         else:
             inherited = project.get("dns_workers") is None
             dns_settings = {"workers": default_dns_workers() if inherited else project["dns_workers"], "inherited": inherited}
+        discovery_settings = (service.discovery_status(project) if hasattr(service, "discovery_status") else
+            {"mode": project.get("discovery_mode", "enumerate"), "cached_available": bool(counts["total"]),
+             "enumeration_enabled": getattr(service, "discovery", True)})
         return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
                                counts=counts, query=query, status_filter=status,
                                runs=runs, last_run=last_run, page="project",
@@ -358,6 +361,7 @@ def create_app(service):
                                source_group_count=len(groups), source_total=source_total,
                                default_count=default_count, hidden_count=counts["total"] - default_count,
                                filter_params=filter_params, view=view, schedule=schedule, dns_settings=dns_settings,
+                               discovery_settings=discovery_settings,
                                gallery_params={**filter_params, "view": "gallery"},
                                table_params={**filter_params, "view": "table"},
                                has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved"))
@@ -475,7 +479,9 @@ def create_app(service):
     def scan_project(project_id):
         project_or_404(project_id)
         try:
-            run = service.submit_scan(str(project_id))
+            mode = request.form.get("discovery_mode")
+            run = (service.submit_scan(str(project_id), discovery_mode=mode) if mode is not None
+                   else service.submit_scan(str(project_id)))
         except RuntimeError as error:
             abort(409, description=str(error))
         except ValueError as error:
@@ -494,7 +500,11 @@ def create_app(service):
         except (ValueError, OverflowError):
             abort(400, description="Choose 0 to turn scheduling off, or an interval between 1 and 8760 hours.")
         try:
-            service.store.set_schedule(str(project_id), hours)
+            mode = request.form.get("discovery_mode")
+            if mode is None:
+                service.store.set_schedule(str(project_id), hours)
+            else:
+                service.store.set_schedule(str(project_id), hours, discovery_mode=mode)
         except ValueError as error:
             abort(400, description=str(error))
         flash("Automatic scans are off for this project." if hours == 0 else "Scan schedule saved for this project.", "success")
