@@ -97,6 +97,18 @@ absent. All inventory names are queried again on every run; generation caching
 never substitutes for fresh DNS. The Python option uses the same saved setting
 as its domain-worker count. See [DNS backend details](../docs/DNS.md).
 
+The rebuilt MassDNS binary is **1.1.0+typowatch2**, with resolver ownership fixes
+for the pinned upstream release plus the existing strict JSON/wire validation.
+Older binaries fail the capability check before a batch starts. A process
+abort with no trustworthy DNS results is reported as a failed scan and keeps
+the accepted inventory, rather than appearing as completed with gaps.
+
+Optional `TYPO_DNS_RESOLVERS="1.1.1.1,1.0.0.1,8.8.8.8,8.8.4.4"` supplies a
+pool; `TYPO_DNS_RESOLVER_MODE=balanced` consistently spreads hostnames across
+it. Default mode is `ordered` failover. Changing that DNS view requires a new
+baseline after informative results have been accepted. Concurrency controls
+outstanding requests, not QPS. See [pool configuration](../docs/DNS.md#settings-and-output).
+
 The default `TYPO_MAX_CANDIDATES=250000` guard stops a run before candidate DNS
 checks if typo generation plus retained inventory exceeds that many unique
 hostnames. This count includes unverified candidates, not just domains that

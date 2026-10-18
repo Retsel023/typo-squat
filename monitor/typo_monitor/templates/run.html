@@ -20,6 +20,14 @@
         {% if state.get('engine') or state.get('version') %}<p class="source-detail"><strong>{{ state.get('engine') or source }}</strong>{% if state.get('version') %} · {{ state.version }}{% endif %}</p>{% endif %}
         {% if state.get('count') is not none %}<p>{{ state.count }} observations</p>{% endif %}
         {% if state.get('error') or state.get('detail') %}<p class="source-detail">{{ state.get('error') or state.get('detail') }}</p>{% endif %}
+        {% if source == 'dns' %}
+          {% if state.get('nameservers') is sequence and state.nameservers is not string %}<p class="source-detail">Resolvers: {{ state.nameservers|join(', ') }}</p>{% endif %}
+          {% if state.get('diagnostics') %}<details class="diagnostic"><summary>DNS processing details</summary>
+            {% for key, label in [('signal', 'Process signal'), ('returncode', 'Process exit code'), ('resolver_mode', 'Resolver mode'), ('queries_completed', 'Terminal question results'), ('queries_total', 'Requested questions'), ('completed_domains', 'Complete domain result sets'), ('trustworthy_domains', 'Trustworthy domain results'), ('unanswered_domains', 'Domains missing terminal results')] %}
+              {% if state.diagnostics.get(key) is not none %}<p class="source-detail">{{ label }}: {{ state.diagnostics[key] }}</p>{% endif %}
+            {% endfor %}
+          </details>{% endif %}
+        {% endif %}
         {% if state.get('engines') is mapping %}<details class="diagnostic"><summary>Discovery engines · {{ state.engines|length }}</summary>
           {% for engine, engine_state in state.engines.items() %}<div class="source-card">
             {% if engine_state is mapping %}{% set engine_status = engine_state.get('status', 'unknown') %}{% else %}{% set engine_status = engine_state %}{% endif %}

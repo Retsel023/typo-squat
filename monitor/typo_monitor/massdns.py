@@ -13,6 +13,7 @@ Schema source: https://github.com/blechschmidt/massdns/blob/v1.1.0/src/main.c
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import ipaddress
 import json
 import logging
@@ -20,6 +21,7 @@ import math
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import struct
 import subprocess
@@ -28,13 +30,14 @@ import time
 
 from .adapters import DnsResolver, _report_progress, _run_command
 from .domains import normalize_domain, normalize_records
+from .progress import _clean_text, _open_read
 
 
 LOG = logging.getLogger(__name__)
 QUERY_TYPES = ("A", "AAAA", "CNAME")
 MAX_CANDIDATES = 1_000_000
 MAX_LINE_BYTES = 512 * 1024
-MAX_OUTPUT_BYTES = 1024 * 1024 * 1024
+MAX_OUTPUT_BYTES = 8 * 1024 * 1024 * 1024
 MAX_STDERR_BYTES = 16 * 1024 * 1024
 MAX_POLL_BYTES = 8 * 1024 * 1024
 MAX_RECORDS = 8192
@@ -279,6 +282,18 @@ def _create(path):
     return os.fdopen(descriptor, "wb")
 
 
+def _stderr_summary(path):
+    """Bounded diagnostic text, not DNS evidence or command instructions."""
+    try:
+        with _open_read(path) as stream:
+            stream.seek(max(0, os.fstat(stream.fileno()).st_size - 4096))
+            text = _clean_text(stream.read(4096).decode("utf-8", errors="replace"))
+        lines = [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("{")]
+        return " | ".join(lines[-6:])[-1200:]
+    except (OSError, ValueError):
+        return ""
+
+
 class _StopSignal:
     def __init__(self, external, local):
         self.external, self.local = external, local
@@ -402,23 +417,37 @@ class MassDnsResolver(DnsResolver):
     """
 
     name = "MassDNS"
-    version = "1.1.0+typowatch1"
+    version = "1.1.0+typowatch2"
     supports_result_stream = True
 
-    def __init__(self, nameservers=None, lifetime=4, workers=24, executable=None, *, resolve_count=3, timeout=3600):
+    def __init__(self, nameservers=None, lifetime=4, workers=24, executable=None, *, resolve_count=3, timeout=3600,
+                 resolver_mode="ordered"):
         super().__init__(nameservers=nameservers, lifetime=lifetime, workers=workers)
         if (not isinstance(resolve_count, int) or isinstance(resolve_count, bool) or not 1 <= resolve_count <= 10
                 or not isinstance(timeout, (int, float)) or isinstance(timeout, bool)
                 or not math.isfinite(timeout) or not 0 < timeout <= 86400
                 or lifetime > 3600):
             raise ValueError("MassDNS requires 1–10 attempts and positive bounded DNS/batch timeouts.")
+        if resolver_mode not in {"ordered", "balanced"}:
+            raise ValueError("Resolver mode must be ordered or balanced.")
         selected = executable or shutil.which("massdns")
         if selected:
             selected = shutil.which(str(selected)) or str(selected)
         self.executable = str(Path(selected).expanduser().absolute()) if selected else None
         self.resolve_count, self.timeout = resolve_count, timeout
+        self.resolver_mode = resolver_mode
         self.workdir = None
         self.last_error = None
+        self.last_failure = False
+        self.last_diagnostics = {}
+
+    def comparison_scope(self):
+        scope = super().comparison_scope()
+        # Existing ordered-mode baselines keep their original fingerprint.
+        # A balanced pool changes the DNS view and must establish its own view.
+        if self.resolver_mode == "balanced":
+            scope["resolver_policy"] = "balanced-domain-sha256-v1"
+        return scope
 
     def _check_cancel(self):
         signal = getattr(self, "cancel_event", None)
@@ -427,6 +456,8 @@ class MassDnsResolver(DnsResolver):
 
     def resolve(self, candidates):
         self.last_error = None
+        self.last_failure = False
+        self.last_diagnostics = {"resolver_mode": self.resolver_mode}
         self._check_cancel()
         if not isinstance(self.workers, int) or isinstance(self.workers, bool) or not 1 <= self.workers <= 128:
             raise ValueError("DNS concurrency must be 1–128.")
@@ -441,7 +472,8 @@ class MassDnsResolver(DnsResolver):
 
         def unavailable(detail):
             self.last_error = detail
-            _report_progress(callback, "dns", detail, current=len(domains), total=len(domains),
+            self.last_failure = True
+            _report_progress(callback, "dns", detail, current=0, total=len(domains),
                              metrics={"resolved": 0, "negative": 0, "uncertain": len(domains)}, level="warning")
             return {domain: {"status": "unknown", "records": [], "error": detail} for domain in domains}
 
@@ -453,18 +485,40 @@ class MassDnsResolver(DnsResolver):
             workdir = _safe_path(self.workdir, directory=True)
             if not workdir.is_dir():
                 raise ValueError("Run artifact directory does not exist.")
+            version_path = workdir / "massdns.version.txt"
+            with _create(version_path) as version_log:
+                version_result = _run_command([self.executable, "--version"], stdout=version_log,
+                    stderr=subprocess.STDOUT, timeout=min(self.timeout, 10),
+                    cancel_event=getattr(self, "cancel_event", None))
+            self._check_cancel()
+            with version_path.open("rb") as version_log:
+                version_text = version_log.read(16 * 1024).decode("utf-8", errors="replace")
+            if (version_result.returncode or "typowatch-json/1" not in version_text
+                    or "safe-resolvers/1" not in version_text):
+                return unavailable("MassDNS requires the rebuilt 1.1.0+typowatch2 binary with JSON validation and "
+                    "safe-resolvers/1 ownership fixes; see massdns.version.txt. No DNS batch was started.")
             scope = self.comparison_scope()
             servers = {str(ipaddress.ip_address(server)) for server in scope["nameservers"]}
             # Preserve the preferred resolver order used by dnspython. Only
             # the exact pinned IPs also present in the resolver file are used.
             ordered_servers = list(dict.fromkeys(str(ipaddress.ip_address(server)) for server in self.nameservers))
+            if self.resolver_mode == "balanced":
+                ordered_servers = sorted(servers)
             if not servers:
                 raise ValueError("No configured DNS resolvers are available.")
+            if len(servers) > 16:
+                raise ValueError("Configure at most 16 recursive DNS resolver IPs.")
             input_path, server_path = workdir / "massdns-input.txt", workdir / "massdns-resolvers.txt"
             output_path, stderr_path = workdir / "massdns.jsonl", workdir / "massdns.stderr.log"
             with _create(input_path) as target:
-                suffix = " " + " ".join(ordered_servers)
-                target.write(("\n".join(domain + suffix for domain in domains) + "\n").encode("ascii"))
+                for index, domain in enumerate(domains):
+                    if index % 1000 == 0:
+                        self._check_cancel()
+                    selected = ordered_servers
+                    if self.resolver_mode == "balanced":
+                        offset = int.from_bytes(hashlib.sha256(domain.encode("ascii")).digest()[:8], "big") % len(selected)
+                        selected = selected[offset:] + selected[:offset]
+                    target.write((domain + " " + " ".join(selected) + "\n").encode("ascii"))
             with _create(server_path) as target:
                 target.write(("\n".join(sorted(servers)) + "\n").encode("ascii"))
             local_stop = threading.Event()
@@ -489,20 +543,31 @@ class MassDnsResolver(DnsResolver):
             command = [str(self.executable), "-r", str(server_path), "-o", "Je",
                        "-t", "A", "-t", "AAAA", "-t", "CNAME", "-s", str(self.workers),
                        "-c", str(self.resolve_count), "-i", str(interval), "--verify-ip", "--flush", "--extended-input",
-                       "--typowatch-json",
+                       "--typowatch-json", "--typowatch-safe-resolvers",
                        "--status-format", "json", str(input_path)]
             _report_progress(callback, "dns", f"MassDNS checking all {len(domains):,} domains with {self.workers} simultaneous DNS questions.",
                              current=0, total=len(domains), metrics={"queries_completed": 0,
                              "queries_total": len(domains) * len(QUERY_TYPES), "concurrency": self.workers})
             command_error = None
+            returncode = None
             with _create(output_path) as stdout, _create(stderr_path) as stderr:
                 try:
                     result = _run_command(command, stdout=stdout, stderr=stderr, timeout=self.timeout,
                                           cancel_event=_StopSignal(getattr(self, "cancel_event", None), local_stop),
                                           on_tick=tick)
+                    returncode = result.returncode
                     if result.returncode:
-                        command_error = (f"MassDNS exited with status {result.returncode}; see massdns.stderr.log. "
-                                         "The bundled v1.1.0 typowatch-json/1 build is required.")
+                        if result.returncode < 0:
+                            try:
+                                name = signal.Signals(-result.returncode).name
+                            except ValueError:
+                                name = f"signal {-result.returncode}"
+                            self.last_diagnostics["signal"] = name
+                            command_error = f"MassDNS terminated by {name} (status {result.returncode}); this is a process failure."
+                        else:
+                            command_error = f"MassDNS exited with status {result.returncode}."
+                        summary = _stderr_summary(stderr_path)
+                        command_error += f" {summary}" if summary else " See massdns.stderr.log."
                 except subprocess.TimeoutExpired:
                     command_error = "MassDNS batch deadline exceeded; unfinished checks remain uncertain."
                 except OSError as exc:
@@ -515,6 +580,7 @@ class MassDnsResolver(DnsResolver):
             reader.poll(final=True)
             if reader.unsupported:
                 self.last_error = reader.fatal
+                self.last_failure = True
                 raise RuntimeError(reader.fatal)
             error = reader.fatal or command_error
             self.last_error = error
@@ -535,12 +601,23 @@ class MassDnsResolver(DnsResolver):
                 observations[domain] = observation
                 category = "resolved" if observation["status"] == "resolved" else "negative" if observation["status"] in {"nxdomain", "noanswer"} else "uncertain"
                 counts[category] += 1
-            _report_progress(callback, "dns", current=len(domains), total=len(domains),
+            trusted = len(domains) - counts["uncertain"]
+            if not trusted:
+                self.last_failure = True
+                self.last_error = error or "No complete trustworthy DNS result was returned; all outcomes remain uncertain. Check resolver connectivity and massdns.stderr.log."
+            self.last_diagnostics.update(returncode=returncode, completed_domains=reader.completed_domains,
+                queries_completed=reader.completed_questions, queries_total=len(domains) * len(QUERY_TYPES),
+                trustworthy_domains=trusted, unanswered_domains=len(domains) - reader.completed_domains)
+            _report_progress(callback, "dns", current=reader.completed_domains, total=len(domains),
                              metrics={**counts, "queries_completed": reader.completed_questions,
                                       "queries_total": len(domains) * len(QUERY_TYPES), "concurrency": self.workers})
-            LOG.info("Run %s: MassDNS %d domains checked; %d resolved, %d negative, %d uncertain",
-                     getattr(self, "run_id", "manual"), len(domains), counts["resolved"], counts["negative"], counts["uncertain"])
+            LOG.info("Run %s: MassDNS %d/%d complete domain results; %d resolved, %d negative, %d uncertain",
+                     getattr(self, "run_id", "manual"), reader.completed_domains, len(domains),
+                     counts["resolved"], counts["negative"], counts["uncertain"])
             return observations
+        except subprocess.TimeoutExpired:
+            self._check_cancel()
+            return unavailable("MassDNS version check exceeded its deadline; no DNS batch was started.")
         except (OSError, ValueError) as exc:
             self._check_cancel()
             return unavailable(f"MassDNS artifacts or resolver configuration are unavailable: {type(exc).__name__}.")

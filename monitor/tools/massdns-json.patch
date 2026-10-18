@@ -1,15 +1,91 @@
 diff --git a/src/main.c b/src/main.c
 --- a/src/main.c
 +++ b/src/main.c
-@@ -76,6 +76,7 @@
+@@ -76,6 +76,8 @@
                      "      --socket-count     Socket count per process. (Default: 1)\n"
                      "  -t  --type             Record type to be resolved. (Default: A)\n"
                      "      --verify-ip        Verify IP addresses of incoming replies.\n"
 +                    "      --typowatch-json   Confirm support for the Typo Monitor JSON schema.\n"
++                    "      --typowatch-safe-resolvers  Confirm resolver ownership fixes.\n"
                      "  -w  --outfile          Write to the specified output file instead of standard output.\n"
                      "\n"
                      "Output flags:\n"
-@@ -1588,7 +1589,7 @@
+@@ -648,6 +650,18 @@
+     }
+ }
+ 
++/* Every lookup owns a reference. The input parser also owns one until all
++ * record types for that input name have been scheduled. */
++void release_dedicated_resolvers(dedicated_resolvers_t **slot)
++{
++    dedicated_resolvers_t *owned = *slot;
++    *slot = NULL;
++    if (owned != NULL && --owned->ref_count == 0)
++    {
++        free(owned);
++    }
++}
++
+ bool next_query(char **qname, dedicated_resolvers_t **dedicated_resolvers, dns_record_type *rtype)
+ {
+     static char line[4096];
+@@ -670,7 +684,7 @@
+         return true;
+     }
+ 
+-    last_dedicated_resolvers = NULL;
++    release_dedicated_resolvers(&last_dedicated_resolvers);
+     last_qname = NULL;
+ 
+     while (fgets(line, sizeof(line), context.domainfile))
+@@ -706,7 +720,7 @@
+                 continue;
+             }
+             last_dedicated_resolvers = *dedicated_resolvers;
+-            (*dedicated_resolvers)->ref_count = 1;
++            (*dedicated_resolvers)->ref_count = 2; /* first lookup + input parser */
+         }
+         else
+         {
+@@ -742,10 +756,7 @@
+ 
+ void lookup_cleanup_dedicated_resolvers(lookup_t *lookup)
+ {
+-    if(lookup->dedicated_resolvers != NULL && --lookup->dedicated_resolvers->ref_count == 0)
+-    {
+-        safe_free((void **) &lookup->dedicated_resolvers);
+-    }
++    release_dedicated_resolvers(&lookup->dedicated_resolvers);
+ }
+ 
+ lookup_t *new_lookup(const char *qname, dns_record_type type)
+@@ -1379,6 +1390,7 @@
+         lookup_t *lookup = new_lookup(qname, rtype);
+         if(lookup == NULL)
+         {
++            release_dedicated_resolvers(&dedicated_resolvers);
+             continue;
+         }
+         lookup->dedicated_resolvers = dedicated_resolvers;
+@@ -1417,13 +1429,15 @@
+ 
+     hashmapRemove(context.map, &lookup->key);
+ 
++    /* Release the completed lookup's ownership before the pool can reuse
++     * and overwrite this lookup in can_send(). */
++    lookup_cleanup_dedicated_resolvers(lookup);
++
+     // Return lookup to pool.
+     // According to ISO/IEC 9899:TC2 §6.7.2.1 (13), structs are not padded at the beginning
+     ((lookup_t**)context.lookup_pool.data)[context.lookup_pool.len++] = lookup;
+ 
+     can_send();
+-
+-    lookup_cleanup_dedicated_resolvers(lookup);
+ 
+     if(context.state == STATE_COOLDOWN && hashmapSize(context.map) <= 0)
+     {
+@@ -1588,7 +1602,7 @@
                      dns_print_packet(context.outfile, &packet, offset, len, next);
                      break;
  
@@ -18,7 +94,7 @@ diff --git a/src/main.c b/src/main.c
                      if (context.format.only_with_answers_or_referrals && packet.head.header.ans_count == 0) {
                          bool contains_referral = false;
                          for (size_t rec_index = 0; dns_parse_record_raw(offset, next, offset + len, &next, &rec)
-@@ -1613,8 +1614,12 @@
+@@ -1613,8 +1627,12 @@
                              dns_class2str((dns_class) packet.head.question.class),
                              dns_rcode2str((dns_rcode) packet.head.header.rcode),
                              now.tv_sec, now.tv_nsec);
@@ -31,7 +107,7 @@ diff --git a/src/main.c b/src/main.c
                          if (section == DNS_SECTION_ANSWER && section_index >= packet.head.header.ans_count) {
                              section_index = 0;
                              section++;
-@@ -1661,10 +1666,36 @@
+@@ -1661,10 +1679,36 @@
                      if (written > 0) {
                          json_flags[written - 1] = 0;
                      }
@@ -70,7 +146,7 @@ diff --git a/src/main.c b/src/main.c
  
                  case OUTPUT_TEXT_SIMPLE: // Only print records from answer section that match the query name
                      if (context.format.print_question) {
-@@ -2889,12 +2920,16 @@
+@@ -2889,12 +2933,20 @@
          {
              context.cmd_args.verify_ip = true;
          }
@@ -78,13 +154,17 @@ diff --git a/src/main.c b/src/main.c
 +        {
 +            /* Capability marker. NDJSON always includes the schema metadata. */
 +        }
++        else if (strcmp(argv[i], "--typowatch-safe-resolvers") == 0)
++        {
++            /* Capability marker for the dedicated-resolver ownership fixes. */
++        }
          else if (strcmp(argv[i], "--version") == 0)
          {
  #ifndef MASSDNS_REVISION
  #define MASSDNS_REVISION "?"
  #endif
 -            fprintf(stderr, "massdns %s\n", MASSDNS_REVISION);
-+            fprintf(stderr, "massdns %s typowatch-json/1\n", MASSDNS_REVISION);
++            fprintf(stderr, "massdns %s typowatch-json/1 safe-resolvers/1\n", MASSDNS_REVISION);
              clean_exit(EXIT_SUCCESS);
          }
          else

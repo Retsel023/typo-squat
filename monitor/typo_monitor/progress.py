@@ -31,7 +31,7 @@ TERMINAL_STAGES = frozenset({"completed", "partial", "cancelled", "failed"})
 _TOOL_NAME = re.compile(
     r"(?:discovery-hostnames\.txt|generator\.log|gowitness\.log|(?:subfinder|assetfinder)-\d+\.(?:stderr\.log|txt)"
     r"|amass-version\.log|amass-\d+\.(?:stdout\.log|stderr\.log|engine\.log|txt)"
-    r"|massdns\.(?:stderr\.log|jsonl)|massdns-(?:a|aaaa|cname)\.(?:stderr\.log|jsonl))\Z")
+    r"|massdns\.(?:version\.txt|stderr\.log|jsonl)|massdns-(?:a|aaaa|cname)\.(?:stderr\.log|jsonl))\Z")
 _DISCOVERY_TOOL_NAMES = {
     "amass": re.compile(r"(?:amass-version\.log|amass-\d+\.(?:stdout\.log|stderr\.log|engine\.log|txt))\Z"),
     "subfinder": re.compile(r"subfinder-\d+\.(?:stderr\.log|txt)\Z"),

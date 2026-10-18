@@ -686,10 +686,12 @@ class Store:
                 db.execute("UPDATE projects SET baseline_run_id=? WHERE id=?", (run_id, project_id))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
-    def fail_run(self, run_id, error):
+    def fail_run(self, run_id, error, *, source_status=None):
+        source_json = _json(source_status) if source_status is not None else None
         with self._connection(write=True) as db:
             self._require_running(db, run_id)
-            db.execute("UPDATE runs SET status='failed',finished_at=?,error=? WHERE id=?", (_now(), str(error), run_id))
+            db.execute("UPDATE runs SET status='failed',finished_at=?,error=?,source_status_json=COALESCE(?,source_status_json) WHERE id=?",
+                       (_now(), str(error), source_json, run_id))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     def cancel_run(self, run_id, reason="Scan cancelled by user."):

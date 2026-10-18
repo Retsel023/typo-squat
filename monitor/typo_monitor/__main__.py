@@ -1,6 +1,7 @@
 """Linux/server entry point; no shell scripts, root access or cron required."""
 
 import argparse
+import ipaddress
 import json
 import logging
 import os
@@ -31,6 +32,9 @@ def parser():
     p.add_argument("--amass-config", type=Path, default=os.environ.get("TYPO_AMASS_CONFIG") or None,
                    help="Optional provider-only Amass 4.2 YAML configuration (TYPO_AMASS_CONFIG)")
     p.add_argument("--resolver", action="append", help="Recursive DNS server IP; repeat for multiple servers")
+    p.add_argument("--resolver-mode", choices=["ordered", "balanced"],
+                   default=os.environ.get("TYPO_DNS_RESOLVER_MODE", "ordered"),
+                   help="MassDNS resolver preference: ordered failover or stable per-domain balancing")
     p.add_argument("--dns-backend", choices=["massdns", "dnspython"],
                    default=os.environ.get("TYPO_DNS_BACKEND", "massdns"),
                    help="DNS lookup backend (TYPO_DNS_BACKEND, otherwise massdns); no automatic fallback")
@@ -131,9 +135,21 @@ def main(argv=None):
             discoverer = Assetfinder(args.assetfinder_path, timeout=args.discovery_timeout)
         if args.dns_backend not in {"massdns", "dnspython"}:
             raise ValueError("TYPO_DNS_BACKEND must be massdns or dnspython.")
-        resolver = (MassDnsResolver(args.resolver, args.dns_timeout, args.workers,
-                                   executable=args.massdns_path, timeout=args.massdns_timeout)
-                    if args.dns_backend == "massdns" else DnsResolver(args.resolver, args.dns_timeout, args.workers))
+        if args.resolver_mode not in {"ordered", "balanced"}:
+            raise ValueError("TYPO_DNS_RESOLVER_MODE must be ordered or balanced.")
+        if args.dns_backend != "massdns" and args.resolver_mode != "ordered":
+            raise ValueError("Balanced resolver pools require the MassDNS backend; use ordered with dnspython.")
+        configured = args.resolver
+        if configured is None:
+            configured = os.environ.get("TYPO_DNS_RESOLVERS", "").replace(",", " ").split() or None
+        if configured:
+            configured = list(dict.fromkeys(str(ipaddress.ip_address(server)) for server in configured))
+            if len(configured) > 16:
+                raise ValueError("Configure at most 16 recursive DNS resolver IPs.")
+        resolver = (MassDnsResolver(configured, args.dns_timeout, args.workers,
+                                   executable=args.massdns_path, timeout=args.massdns_timeout,
+                                   resolver_mode=args.resolver_mode)
+                    if args.dns_backend == "massdns" else DnsResolver(configured, args.dns_timeout, args.workers))
         with MonitorService(args.data_dir, discovery=not args.no_discovery, discoverer=discoverer,
                             resolver=resolver,
                             max_candidates=args.max_candidates,

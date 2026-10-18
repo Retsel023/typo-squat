@@ -20,7 +20,8 @@ RUN git clone --depth 1 --branch v4.2.0 https://github.com/owasp-amass/amass.git
     && cd /src/amass \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/amass ./cmd/amass
 
-# Bulk DNS lookups use a pinned upstream release. Build tools stay in this stage.
+# Bulk DNS uses pinned upstream plus JSON validation and dedicated-resolver
+# ownership fixes (1.1.0+typowatch2). Build tools stay in this stage.
 ARG MASSDNS_REVISION=ca8114164361f6a296399d8160bb07d55bdc4843
 COPY tools/massdns-json.patch /tmp/massdns-json.patch
 RUN apt-get update \

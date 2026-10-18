@@ -162,7 +162,7 @@ class MonitorService:
         backend = getattr(self.resolver, "name", type(self.resolver).__name__)
         tools[f"DNS lookups · {backend}"] = {
             "available": bool(getattr(self.resolver, "executable", None)) if isinstance(self.resolver, MassDnsResolver) else True,
-            "detail": ("Requires the bundled MassDNS JSON completeness patch. " if isinstance(self.resolver, MassDnsResolver) else "")
+            "detail": ("Requires rebuilt MassDNS 1.1.0+typowatch2 with JSON and resolver ownership fixes. " if isinstance(self.resolver, MassDnsResolver) else "")
                       + "Fresh A, AAAA and CNAME queries; no automatic backend fallback."}
         engines = getattr(self.discoverer, "engines", {"discovery": self.discoverer})
         for adapter in engines.values():
@@ -420,6 +420,15 @@ class MonitorService:
                     "--max-candidates (TYPO_MAX_CANDIDATES in Compose); saved inventory and baseline were preserved.")
             (workdir / "candidates.txt").write_text("\n".join(candidates) + "\n", encoding="utf-8")
             backend = getattr(self.resolver, "name", type(self.resolver).__name__)
+            def resolve_candidates():
+                try:
+                    return self.resolver.resolve(candidates)
+                except Exception as exc:
+                    source_status["dns"] = {"status": "failed", "engine": backend,
+                        "detail": getattr(self.resolver, "last_error", None) or f"{type(exc).__name__}: {exc}",
+                        "version": getattr(self.resolver, "version", None),
+                        "diagnostics": getattr(self.resolver, "last_diagnostics", {})}
+                    raise
             LOG.info("Run %s: DNS checks starting with %s for %d candidates; concurrency %d", run_id, backend, len(candidates), workers)
             report("dns", f"Checking {len(candidates):,} domains with {backend}; DNS concurrency {workers}.",
                    current=0, total=len(candidates), metrics={"resolved": 0, "negative": 0, "uncertain": 0})
@@ -431,7 +440,7 @@ class MonitorService:
                 try:
                     report("pipeline", "Checking DNS; completed positive results feed HTTP checks and one browser process.",
                            current=0, total=len(candidates))
-                    observations = self.resolver.resolve(candidates)
+                    observations = resolve_candidates()
                     self._check_shutdown()
                     if set(observations) != set(candidates):
                         raise RuntimeError("Resolver did not return an observation for every candidate; baseline unchanged.")
@@ -449,20 +458,27 @@ class MonitorService:
                 finally:
                     pipeline.close()
             else:
-                observations = self.resolver.resolve(candidates)
+                observations = resolve_candidates()
             self._check_shutdown()
             if set(observations) != set(candidates):
                 raise RuntimeError("Resolver did not return an observation for every candidate; baseline unchanged.")
             dns_error = getattr(self.resolver, "last_error", None)
             source_status["dns"] = {
-                "status": "partial" if dns_error or any(o["status"] == "unknown" for o in observations.values()) else "ok",
+                "status": "failed" if getattr(self.resolver, "last_failure", False) else
+                          "partial" if dns_error or any(o["status"] == "unknown" for o in observations.values()) else "ok",
                 "engine": backend,
                 "detail": "Fresh A, AAAA and CNAME; recursive DNS observations, not registration checks."
                           + (f" {dns_error}" if dns_error else ""),
                 "nameservers": getattr(self.resolver, "nameservers", None) or "system",
-                "workers": getattr(self.resolver, "workers", None)}
+                "workers": getattr(self.resolver, "workers", None),
+                "diagnostics": getattr(self.resolver, "last_diagnostics", {})}
             if getattr(self.resolver, "version", None):
                 source_status["dns"]["version"] = self.resolver.version
+            if source_status["dns"]["status"] == "failed":
+                for stage in ("parking", "screenshots", "visual_comparison"):
+                    source_status[stage] = {"status": "skipped",
+                        "detail": "DNS processing failed without a trustworthy complete domain result; this stage was not accepted."}
+                raise RuntimeError(dns_error or "DNS processing failed; saved inventory and baseline were preserved.")
             if self.parking_classifier:
                 LOG.info("Run %s: parking checks starting", run_id)
                 report("parking", "Checking resolving domains for known DNS parking signals.")
@@ -531,7 +547,7 @@ class MonitorService:
                     return result
                 LOG.exception("Run %s failed", run_id)
                 report("failed", f"{type(exc).__name__}: {exc}", level="error")
-                return self.store.fail_run(run_id, f"{type(exc).__name__}: {exc}")
+                return self.store.fail_run(run_id, f"{type(exc).__name__}: {exc}", source_status=source_status)
         finally:
             self._cancel_events.pop(run_id, None)
             self._progress.pop(run_id, None)

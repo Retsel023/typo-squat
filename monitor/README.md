@@ -257,9 +257,22 @@ while dnspython uses it as the number of domain worker threads. The same setting
 limits later parking and website checks. Browser capture concurrency remains
 separate.
 
+Concurrency limits outstanding work, not queries per second. The rebuilt
+MassDNS **1.1.0+typowatch2** fixes dedicated-resolver ownership in the pinned
+upstream release and is capability-checked before a batch starts. A process
+failure with no trustworthy DNS domain results now fails the scan and preserves
+accepted state, with its signal and diagnostic excerpt visible in source health.
+See [DNS crash handling and resolver pools](../docs/DNS.md).
+
 The server default can be set with `--workers 20` before the CLI command, or
 `TYPO_DNS_WORKERS=20`. Both Compose profiles pass that environment variable into
 the container. A saved project setting takes precedence over the server default.
+
+Both Compose profiles also accept `TYPO_DNS_RESOLVERS` for an explicit pool
+and `TYPO_DNS_RESOLVER_MODE=balanced` to distribute hostnames consistently across
+it. The default remains ordered failover. An established baseline keeps its
+resolver view pinned; use a new project to change that view after informative
+DNS results have been accepted.
 
 Discovery uses `--discovery-engine combined` by default. Set that option to
 `amass`, `subfinder` or `assetfinder` for a single adapter. The combined tools
