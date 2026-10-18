@@ -1,4 +1,4 @@
-"""Bounded HTML title checks and explicit, opt-in screenshot exclusions."""
+"""Bounded HTML title/text checks and explicit, opt-in screenshot exclusions."""
 
 import codecs
 from contextlib import ExitStack
@@ -84,14 +84,26 @@ class _Title(HTMLParser):
                 self.truncated = self.done = True
 
 
-def inspect_title(response, session, deadline, check_cancel):
+def inspect_title(response, session, deadline, check_cancel, *, collect_text=False):
     """Reuse the open response, with at most three extra redirect requests.
 
     A failed title lookup never retracts the initial HTTP response. Compressed
     bodies are not decoded here, avoiding unbounded inflation before the byte cap.
     """
     result = {"title": None, "title_status": "missing", "title_url": response.url,
-              "title_http_status": response.status_code, "title_bytes": 0}
+              "title_http_status": response.status_code, "title_bytes": 0,
+              "content_status": "missing" if collect_text else "disabled"}
+    title_parser = None
+
+    def failed(status):
+        result["title_status"] = status
+        if collect_text:
+            result["content_status"] = status
+        if title_parser is not None and title_parser.complete and not title_parser.truncated:
+            title = " ".join(title_parser.text.split())
+            if title:
+                result.update(title=title, title_status="found")
+        return result
 
     def remaining():
         check_cancel()
@@ -107,27 +119,23 @@ def inspect_title(response, session, deadline, check_cancel):
             for hop in range(MAX_REDIRECTS + 1):
                 remaining()
                 if len(current.url) > 2048:
-                    result.update(title_url=None, title_status="unsupported_redirect")
-                    return result
+                    result["title_url"] = None
+                    return failed("unsupported_redirect")
                 result.update(title_url=current.url, title_http_status=current.status_code)
                 location = current.headers.get("Location")
                 if current.status_code in {301, 302, 303, 307, 308} and location:
                     if hop == MAX_REDIRECTS:
-                        result["title_status"] = "redirect_limit"
-                        return result
+                        return failed("redirect_limit")
                     if len(location) > 2048:
-                        result["title_status"] = "unsupported_redirect"
-                        return result
+                        return failed("unsupported_redirect")
                     parsed = urlsplit(urljoin(current.url, location))
                     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
                             or parsed.username is not None or parsed.password is not None):
-                        result["title_status"] = "unsupported_redirect"
-                        return result
+                        return failed("unsupported_redirect")
                     parsed.port  # Reject malformed ports before requesting.
                     target = urlunsplit(parsed._replace(fragment=""))
                     if target in visited or len(target) > 2048:
-                        result["title_status"] = "redirect_limit"
-                        return result
+                        return failed("redirect_limit")
                     visited.add(target)
                     # No redirect body is needed and no old connection is reused.
                     current.close()
@@ -145,35 +153,41 @@ def inspect_title(response, session, deadline, check_cancel):
 
                 content_type = current.headers.get("Content-Type", "").lower()
                 if content_type and content_type.split(";", 1)[0].strip() not in {"text/html", "application/xhtml+xml"}:
-                    result["title_status"] = "non_html"
-                    return result
+                    return failed("non_html")
                 if current.headers.get("Content-Encoding", "identity").strip().lower() not in {"", "identity"}:
-                    result["title_status"] = "encoded"
-                    return result
+                    return failed("encoded")
                 charset = re.search(r"charset\s*=\s*[\"']?([^;\s\"']+)", content_type)
                 try:
                     decoder = codecs.getincrementaldecoder(charset.group(1) if charset else "utf-8-sig")("replace")
                 except LookupError:
                     decoder = codecs.getincrementaldecoder("utf-8-sig")("replace")
-                parser = _Title()
-                while result["title_bytes"] < MAX_HTML_BYTES and not parser.done:
+                title_parser = _Title()
+                parser, limit, eof = title_parser, MAX_HTML_BYTES, False
+                if collect_text:
+                    from .page_text import MAX_BODY_BYTES, PageText
+                    parser, limit = PageText(title_parser, current.url), MAX_BODY_BYTES
+                while result["title_bytes"] < limit and not parser.done:
                     remaining()
-                    chunk = current.raw.read1(min(4096, MAX_HTML_BYTES - result["title_bytes"]), decode_content=False)
+                    chunk = current.raw.read1(min(4096, limit - result["title_bytes"]), decode_content=False)
                     remaining()
                     if not chunk:
                         parser.feed(decoder.decode(b"", final=True))
+                        parser.close()
+                        eof = True
                         break
                     result["title_bytes"] += len(chunk)
                     parser.feed(decoder.decode(chunk))
-                title = " ".join(parser.text.split())
+                title = " ".join(title_parser.text.split())
                 result["title"] = title or None
-                result["title_status"] = ("truncated" if parser.truncated else "found" if parser.complete and title else
-                    "truncated" if result["title_bytes"] == MAX_HTML_BYTES and not parser.done else "missing")
+                result["title_status"] = ("truncated" if title_parser.truncated or title_parser.inside and not title_parser.complete else "found" if title_parser.complete and title else
+                    "truncated" if result["title_bytes"] == limit and not parser.done else "missing")
+                if collect_text:
+                    result.update(parser.result(eof or parser.done and not parser.truncated))
                 return result
     except (TimeoutError, requests.exceptions.Timeout):
-        result["title_status"] = "timeout"
+        return failed("timeout")
     except (requests.exceptions.RequestException, UrllibError, OSError, ValueError, UnicodeError):
-        result["title_status"] = "read_error"
+        return failed("read_error")
     return result
 
 

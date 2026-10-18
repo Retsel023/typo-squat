@@ -101,14 +101,14 @@ def main(argv=None):
             store = Store(args.data_dir)
             run_id = args.run
             if args.project:
-                runs = [run for run in store.list_runs(args.project) if run["status"] != "running"]
+                runs = [run for run in store.list_runs(args.project) if run["status"] in {"completed", "partial"}]
                 if not runs:
                     raise ValueError("That project has no finished runs.")
                 run_id = runs[0]["id"]
             report = build_preview(store, args.data_dir, run_id, limit=args.limit, offset=args.offset)
             for path in write_preview(report, args.output):
                 print(path.resolve())
-            print(f"{report['summary']['selected_pairs']} eligible pairs; this batch has {report['batch']['pairs']} pairs and {report['batch']['inline_image_bytes']} inline image bytes. External requests: 0.")
+            print(f"{report['summary']['selected_pairs']} eligible pairs; this batch has {report['batch']['pairs']} pairs and {report['batch']['text_bytes']} text bytes (no images). External requests: 0.")
             return 0
         from .adapters import DnsResolver, Subfinder
         from .assetfinder import Assetfinder

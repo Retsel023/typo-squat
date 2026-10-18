@@ -16,7 +16,7 @@ from flask import (
 )
 
 from .domains import normalize_domain, parse_domains
-from .handoff import review_selection
+from .text_review import review_selection
 from .progress import read_progress, read_tool_output
 
 
@@ -112,6 +112,8 @@ def _capture_status(attempt):
     if not attempt:
         return "No screenshot"
     error = str(attempt.get("error") or "").strip().lower()
+    if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_content":
+        return "Text unchanged · capture skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_title":
         return "Title unchanged · no capture requested"
     if error.startswith("screenshot excluded by title rule:"):
@@ -589,7 +591,7 @@ def create_app(service):
             days = request.form.get("refresh_days", "")
             if not days.isascii() or not days.isdigit() or len(days) > 3:
                 raise ValueError("Choose 0–365 days for screenshot refresh.")
-            service.set_capture_policy(str(project_id), mode=request.form.get("mode", "changes"), refresh_days=int(days))
+            service.set_capture_policy(str(project_id), mode=request.form.get("mode", "changes"), refresh_days=int(days), comparison=request.form.get("comparison", "text"))
         except ValueError as error:
             abort(400, description=str(error))
         flash("Screenshot policy saved for newly queued scans.", "success")
@@ -714,7 +716,7 @@ def create_app(service):
                                handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
                                                "title_filtered": "Excluded by title rule",
                                                "title_unchanged": "Unchanged titles · no screenshots requested",
-                                               "unchanged": "Unchanged images", "uncertain": "Uncertain comparisons",
+                                               "unchanged": "Unchanged text", "uncertain": "Incomplete / uncertain text",
                                                "duplicate": "Duplicate protocol pairs", "parked": "Likely parked",
                                                "reviewed": "Already reviewed"})
 

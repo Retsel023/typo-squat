@@ -216,7 +216,7 @@ Enable the option, enter specific title phrases such as `GoDaddy` or a station
 name (one per line), and save before
 starting a scan. Matching ignores case and checks HTTP and HTTPS independently.
 Exclusion rules are off by default. Website checks reuse the GET, reading
-up to 64 KiB of uncompressed HTML and following at most three redirects within
+up to 64 KiB of HTML in title-only mode or 512 KiB in default text mode, following at most three redirects within
 the probe's timeout budget. They use the same website proxy as Gowitness.
 
 Only complete titles on final 2xx responses can skip a screenshot. Missing or
@@ -225,35 +225,46 @@ need the browser. Original roots and discovered source subdomains bypass title
 exclusions to preserve references. Excluded endpoints keep their DNS inventory,
 title, reason and whether the rule was global or project-specific; later scans
 check them again. Previous images remain saved.
-The run report counts title exclusions separately from failures, and no image
-is sent for them in the n8n review queue. Use specific phrases: titles alone do
+The run report counts title exclusions separately from failures; excluded
+entries do not enter the AI text review queue. Use specific phrases: titles alone do
 not establish whether a site is safe. Changes apply to newly queued manual and
 scheduled scans. Each run saves both lists when queued and displays those
 rules in scan details. Queued/running scans keep their original settings.
 Title comparisons continue when both exclusion lists are off.
 
-Routine scans now default to **Changes only**. They compare static HTML titles
-against the previous accepted run, separately for HTTP and HTTPS. An unchanged
-title and matching HTTP endpoint can skip Gowitness when its matching successful
-image baseline is still available. Missing/uncertain titles, missing baselines,
-prior capture failures, changed titles/endpoints and new websites still reach
-the browser. Existing reports without static title data need a fresh baseline.
+Routine scans default to **Changes only**. Every run refreshes DNS and
+HTTP/HTTPS checks; subdomain enumeration is independent. The project
+**Screenshot and report policy** now defaults to **Page text + titles + form/link
+details**, with **Titles only** available as a lighter option. Text mode reads
+up to 512 KiB of static HTML and retains at most 12,000 readable characters.
+Scripts, styles and hidden input values are excluded; whitespace is normalized.
+Case, digits and punctuation remain meaningful. Link destinations (including
+query strings), form actions and field purposes contribute to the fingerprint.
 
-Use **Latest report** for the website changelog: it shows new or changed
-observations, before/after titles and only images actually captured in that run.
-Unchanged sites do not repeat old screenshots. DNS changes have their own
-section; a change is not proof of a domain purchase. The complete project
-inventory and prior reports stay available separately.
+Unchanged content, title, HTTP endpoint and route can skip Gowitness only with
+a matching successful screenshot baseline still on disk. New/changed content,
+missing/failed baselines, HTTP errors and incomplete/unreadable/sparse dynamic
+responses still reach the browser. Older reports without text need a fresh
+baseline once. Screenshots remain for manual visual review; automated AI review
+uses complete new/changed text only, even if its screenshot failed.
 
-Choose **Full capture / report** beside **Start scan** for all eligible endpoints.
-It is independent of enumeration. The **Screenshot and report policy** panel
-sets the manual default and a periodic recapture age: 30 days by default,
-0 to disable, up to 365. A page can change without changing its title; periodic
-or full captures can detect that, while identical images stay out of change
-reports and the AI queue. Both schedule cards have a screenshot/report selector,
-so monthly enumeration/full capture can accompany weekly cached/changelog runs.
-Queued and running scans retain their saved policy. Global/project exclusion
-phrases apply in both modes.
+The **Website changelog** shows new/changed observations, before/after titles,
+expandable text diffs and this run's screenshots. It does not repeat old images.
+The inventory and older reports retain the complete history. DNS changes remain
+separate; changes do not prove a purchase or maliciousness.
+
+**Full capture / report** captures all eligible endpoints, respecting title
+exclusions. The default periodic recapture age is 30 days (0 disables, up to 365).
+Static text cannot reveal purely visual or JavaScript-only changes, so full or
+periodic captures still help human review. Unchanged text stays out of the AI
+queue even when a periodic/full screenshot changes.
+Each enumeration/cached schedule independently selects changes/full; monthly
+full enumeration/capture can accompany weekly cached changelogs. If both are due,
+full capture wins when either requires it. Policy is snapshotted at queue time.
+Native scans accept `scan --capture-mode changes` or `full`; the API accepts
+`capture_mode` independently of `discovery_mode`.
+
+See [text-only n8n review](../docs/N8N.md) and the [suggested AI prompt](../docs/AI_TEXT_PROMPT.md).
 
 MassDNS can feed this work before its bulk DNS job finishes. A domain is offered
 only after its A, AAAA and CNAME questions are complete and the positive result
@@ -325,7 +336,7 @@ labelled reference and imitation screenshots, before/after changes, HTTP/HTTPS
 duplicate collapse, parking and failed-capture examples. These are simulated
 observations, not findings about real domains. The demo also writes
 `/data/reports/demo.html` and `demo.json`, showing the first five pairs that would
-qualify for optional AI review and their measured image size. Repeating `demo`
+qualify for optional AI text review and their measured text size. Repeating `demo`
 creates another simulated project.
 
 The server and commands such as `demo`, `doctor` and `scan` use an exclusive
@@ -355,24 +366,23 @@ For an explicit completed run or another page:
 docker compose run --rm monitor handoff-preview --run RUN_UUID --limit 5 --offset 5 --output /data/reports/next
 ```
 
-The HTML/JSON report contains counts of selected/excluded captures and measured
-image bytes. It contains no embedded screenshots and makes zero external
-requests. Repeated reference images and base64 overhead are counted; prompts and
-HTTP/JSON overhead are additional. Byte counts do not estimate tokens or price.
-A first scan may produce many new candidates, so begin with five pairs.
+The HTML/JSON preview reports selected/excluded text observations, transfer
+characters and UTF-8 bytes for the exact bounded text evidence batch. No images
+or text bodies are embedded in the preview, and no external requests are made.
+Counts include JSON escaping and repeated references; prompts and transport
+wrappers are extra. Bytes/characters do not estimate tokens or price.
 
-The shared selection excludes unchanged images, equivalent HTTP/HTTPS review
-pairs, original-domain captures, failed/uncertain comparisons, likely parking
-pages and captures with a saved AI review. Parked sites remain in the gallery.
-Each selected pair can include the current capture, a previous capture and one
-owned reference. Optional handoff copies are bounded to 1280 pixels on their
-longest edge and 256 KiB each; full-resolution evidence remains on disk. Smaller
-copies can obscure fine text, so inspect local originals for close review.
+New/changed complete text qualifies; unchanged/uncertain text, owned domains,
+likely parking pages, title exclusions, equivalent same-host protocol histories
+and saved text reviews are excluded. A pair can include current/previous text,
+a compact diff and one owned reference. Older image-only runs have no text queue
+until a fresh text baseline is collected. The offline image demo therefore does
+not simulate live text extraction or AI review.
 
-The [separate n8n workflow](../docs/N8N.md) is optional and starts with AI disabled.
-It uses n8n's native OpenAI image-analysis node when enabled. Nothing in this
-standalone profile runs an AI model; local change detection and duplicate checks
-compare image pixels.
+The [separate n8n workflow](../docs/N8N.md) starts with AI disabled. It uses the
+native OpenAI text response node with gpt-4o-mini when enabled. No screenshot
+bytes or image URLs enter the AI request; screenshots are for human review.
+No local AI model is required.
 
 ## Optional native Python runner
 

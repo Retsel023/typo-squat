@@ -41,9 +41,11 @@ pixel comparison tracks changes and collapses identical protocol images in the
 gallery. During MassDNS, complete positive DNS results can enter bounded web
 checks and feed responsive URLs to Gowitness before the bulk DNS job finishes.
 Accepted findings still publish together when the run completes.
-The [n8n Cloud workflow](workflows/n8n-visual-review.json) can orchestrate
-the server over HTTPS and send a small selected batch to n8n's OpenAI image node.
-AI starts disabled; local image comparison works without it.
+The [n8n Cloud workflow](workflows/n8n-text-review.json) can orchestrate
+the server over HTTPS and send a small selected batch of changed page text to
+n8n's OpenAI text node. AI starts disabled. Normalized static text, titles and
+form/link details are compared locally; screenshots remain for manual review.
+See the [text-only AI prompt](docs/AI_TEXT_PROMPT.md).
 Embedded XLSX reporting remains in the historical scripts.
 The [audit](docs/AUDIT.md) explains the original failure modes and tool choices.
 
@@ -54,7 +56,7 @@ The [audit](docs/AUDIT.md) explains the original failure modes and tool choices.
 | [`legacy/`](legacy/ARCHIVE.md) | Every original file, preserved from commit `eff48ca`. |
 | [`monitor/`](monitor/README.md) | Current Python scanner, GUI, screenshots, tests and Docker setup. |
 | [`standalone/`](standalone/README.md) | Docker Compose profile and optional native runner, with separate data and handoff reports, without n8n. |
-| [`workflows/`](workflows/n8n-visual-review.json) | Optional n8n workflow and suggested AI prompt. |
+| [`workflows/`](workflows/n8n-text-review.json) | Optional n8n workflow and suggested AI prompt. |
 | [`docs/`](docs/AUDIT.md) | Design audit and configuration guides. |
 
 Start locally in Docker without n8n:
@@ -67,6 +69,6 @@ docker compose up --build -d
 Open <http://127.0.0.1:5055>. The standalone guide also explains how to seed the
 labeled offline demo and measure a review batch. Real projects run their
 discovery, DNS and browser checks inside the Linux container. Full screenshots
-stay local; the optional handoff sends only selected image copies and defaults
+stay local; the optional handoff sends only bounded text evidence and defaults
 to five pairs per batch.
 

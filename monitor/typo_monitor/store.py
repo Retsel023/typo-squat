@@ -359,7 +359,7 @@ class Store:
                 if not isinstance(visual, dict) or len(_json(visual)) > 16384:
                     raise ValueError("Invalid screenshot comparison metadata.")
                 preflight = attempt.get("preflight", {})
-                if not isinstance(preflight, dict) or len(_json(preflight)) > 16384:
+                if not isinstance(preflight, dict) or len(_json(preflight)) > 65536:
                     raise ValueError("Invalid website preflight metadata.")
                 try:
                     captured_at = datetime.fromisoformat(timestamp)
@@ -483,9 +483,9 @@ class Store:
             db.execute("UPDATE projects SET capture_filter_json=? WHERE id=?", (_json(policy), project_id))
         return policy
 
-    def set_capture_policy(self, project_id, *, mode, refresh_days):
+    def set_capture_policy(self, project_id, *, mode, refresh_days, comparison="text"):
         from .capture_changes import normalize_policy
-        policy = normalize_policy(mode, refresh_days)
+        policy = normalize_policy(mode, refresh_days, comparison)
         with self._connection(write=True) as db:
             self._require_project(db, project_id)
             db.execute("UPDATE projects SET capture_policy_json=? WHERE id=?", (_json(policy), project_id))
@@ -738,7 +738,7 @@ class Store:
             from .capture_changes import normalize_policy
             capture_policy = normalize_policy(**json.loads(project["capture_policy_json"]))
             if capture_mode is not None:
-                capture_policy = normalize_policy(capture_mode, capture_policy["refresh_days"])
+                capture_policy = normalize_policy(capture_mode, capture_policy["refresh_days"], capture_policy["comparison"])
             run_id = str(uuid4())
             db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key,capture_filter_json,capture_policy_json)
                 VALUES(?,?, 'running', ?,?,?,?,?,?,?)""",
@@ -913,6 +913,7 @@ class Store:
                      for domain, attempt in attempts])
                 counts["screenshots_total"] = len(attempts)
                 counts["screenshots_title_filtered"] = sum(attempt["preflight"].get("skip_reason") == "title_rule" for _, attempt in attempts)
+                counts["screenshots_text_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_content" for _, attempt in attempts)
                 counts["screenshots_title_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_title" for _, attempt in attempts)
                 for capture_status in ("captured", "failed", "unavailable", "skipped"):
                     counts["screenshots_" + capture_status] = sum(attempt["status"] == capture_status for _, attempt in attempts)
@@ -1015,6 +1016,23 @@ class Store:
             return [self._capture(row) for row in db.execute("""SELECT * FROM captures
                 WHERE project_id=? AND domain=? ORDER BY captured_at DESC,rowid DESC LIMIT ?""", (project_id, domain, limit))]
 
+    def text_review_context(self, project_id, run_id):
+        """Only seeds and this run's capture-domain context, never full inventory."""
+        with self._connection() as db:
+            db.execute("BEGIN")
+            self._require_project(db, project_id)
+            seeds = {row["domain"] for row in db.execute(
+                "SELECT domain FROM inventory WHERE project_id=? AND kind='seed'", (project_id,))}
+            states = {row["domain"]: {"parking": {"status": row["parking_status"]}, "sources": []}
+                for row in db.execute("""SELECT DISTINCT c.domain,e.parking_status FROM captures c
+                    LEFT JOIN domain_enrichment e ON e.project_id=c.project_id AND e.domain=c.domain
+                    WHERE c.project_id=? AND c.run_id=?""", (project_id, run_id))}
+            for row in db.execute("""SELECT DISTINCT s.domain,s.seed FROM captures c JOIN candidate_sources s
+                ON s.project_id=c.project_id AND s.domain=c.domain WHERE c.project_id=? AND c.run_id=?
+                ORDER BY s.domain,s.seed""", (project_id, run_id)):
+                states[row["domain"]]["sources"].append(row["seed"])
+            return seeds, states
+
     def list_run_captures(self, run_id):
         with self._connection() as db:
             return [self._capture(row) for row in db.execute(
@@ -1050,7 +1068,7 @@ class Store:
                 AND scheme=? AND status='captured' ORDER BY captured_at DESC,rowid DESC LIMIT 1""",
                 (project_id, domain, scheme)).fetchone())
 
-    def save_capture_review(self, run_id, domain, scheme, review):
+    def save_capture_review(self, run_id, domain, scheme, review, *, text_only=False):
         if not isinstance(review, dict):
             raise ValueError("AI assessment must be a JSON object.")
         for field in ("provider", "model", "summary"):
@@ -1064,15 +1082,25 @@ class Store:
         if confidence is not None and (not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1):
             raise ValueError("AI confidence must be between 0 and 1.")
         assessment = {field: review.get(field) for field in ("provider", "model", "summary", "risk", "changed", "confidence")}
+        if text_only:
+            if not isinstance(review.get("content_sha256"), str) or len(review["content_sha256"]) != 64:
+                raise ValueError("A text content_sha256 is required; image assessments are disabled on the API.")
+            assessment.update(kind="text", content_sha256=review["content_sha256"])
         assessment["reviewed_at"] = _now()
         serialized = _json(assessment)
         if len(serialized) > 16384:
             raise ValueError("AI assessment is too large.")
         with self._connection(write=True) as db:
-            result = db.execute("""UPDATE captures SET analysis_json=? WHERE run_id=? AND domain=?
-                AND scheme=? AND status='captured'""", (serialized, run_id, normalize_domain(domain), scheme))
-            if result.rowcount != 1:
-                raise ValueError("A successful capture is required for an AI assessment.")
+            domain = normalize_domain(domain)
+            row = db.execute("SELECT * FROM captures WHERE run_id=? AND domain=? AND scheme=?", (run_id, domain, scheme)).fetchone()
+            capture = self._capture(row) if row else None
+            if text_only:
+                from .capture_changes import text_complete
+                if not capture or not text_complete(capture["preflight"]) or capture["preflight"].get("content_sha256") != review["content_sha256"]:
+                    raise ValueError("Assessment must match this scan's complete saved text fingerprint.")
+            elif not capture or capture["status"] != "captured":
+                raise ValueError("A successful capture is required for an image assessment.")
+            db.execute("UPDATE captures SET analysis_json=? WHERE run_id=? AND domain=? AND scheme=?", (serialized, run_id, domain, scheme))
             return self._capture(db.execute("SELECT * FROM captures WHERE run_id=? AND domain=? AND scheme=?",
                                            (run_id, normalize_domain(domain), scheme)).fetchone())
 

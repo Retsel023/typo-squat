@@ -1,19 +1,13 @@
-"""Opt-in authenticated HTTP interface for n8n Cloud and other schedulers.
-
-No image upload or AI request is made by this application. Image bytes are only
-returned for an explicitly requested, authenticated capture pair.
-"""
+"""Opt-in, authenticated text-only handoff. Screenshots stay in manual UI."""
 
 import hmac
 import os
 from uuid import UUID
 
-from flask import Blueprint, abort, jsonify, request, url_for
-from PIL import Image
+from flask import Blueprint, abort, jsonify, request
 
 from .domains import normalize_domain
-from .handoff import review_selection
-from .handoff_images import image_payload
+from .text_review import review_selection, pack_pair
 
 
 def create_automation_blueprint(service):
@@ -68,25 +62,16 @@ def create_automation_blueprint(service):
     def scan_status(run_id):
         return run_status(require_run(run_id))
 
-    def pack_capture(capture, include_images):
-        if capture is None:
-            return None
-        result = {key: capture.get(key) for key in ("run_id", "domain", "scheme", "url", "status", "title", "http_status", "captured_at", "visual", "analysis")}
-        result["visual"] = {key: capture.get("visual", {}).get(key) for key in ("change", "previous_run_id", "duplicate_kind", "duplicate_of", "pixel_sha256")}
-        result["image_url"] = url_for("capture_image", run_id=capture["run_id"], domain=capture["domain"], scheme=capture["scheme"])
-        if include_images:
-            try:
-                result.update(image_payload(service.data_dir, capture))
-            except (OSError, ValueError, Image.DecompressionBombError):
-                result["image_error"] = "The recorded image is unavailable or failed validation."
-        return result
-
+    @bp.get("/runs/<uuid:run_id>/text-review")
     @bp.get("/runs/<uuid:run_id>/review")
     def review_manifest(run_id):
         run = require_run(run_id)
-        if run["status"] == "running":
-            abort(409, description="The scan is still running.")
+        if run["status"] not in {"completed", "partial"}:
+            abort(409, description="A completed or partial scan is required.")
         include_images = request.args.get("include_images", "0") == "1"
+        if include_images:
+            abort(400, description="Image transfer for AI is disabled. Use text-review with include_text=1.")
+        include_text = request.args.get("include_text", "0") == "1"
         domain, scheme = request.args.get("domain", ""), request.args.get("scheme", "")
         try:
             if domain:
@@ -95,8 +80,8 @@ def create_automation_blueprint(service):
             abort(400, description="Choose a valid candidate domain.")
         if scheme and scheme not in ("http", "https"):
             abort(400, description="Choose HTTP or HTTPS.")
-        if include_images and (not domain or not scheme):
-            abort(400, description="Image transfer requires one explicit domain and scheme.")
+        if include_text and (not domain or not scheme):
+            abort(400, description="Text transfer requires one explicit domain and scheme.")
         try:
             limit = int(request.args.get("limit", "100"))
             offset = int(request.args.get("offset", "0"))
@@ -109,16 +94,13 @@ def create_automation_blueprint(service):
                                      include_reviewed=request.args.get("include_reviewed") == "1")
         captures = [pair for pair in selection["items"]
                     if (not domain or pair["domain"] == domain) and (not scheme or pair["scheme"] == scheme)]
-        items = []
-        for pair in captures[offset:offset + limit]:
-            items.append({"domain": pair["domain"], "scheme": pair["scheme"], "visual_status": pair["visual_status"],
-                          "current": pack_capture(pair["current"], include_images), "previous": pack_capture(pair["previous"], include_images),
-                          "references": [pack_capture(reference, include_images) for reference in pair["references"]]})
+        items = [pack_pair(pair, include_text=include_text) for pair in captures[offset:offset + limit]]
         next_offset = offset + limit if offset + limit < len(captures) else None
         return {"run_id": str(run_id), "items": items, "total": len(captures), "next_offset": next_offset,
-                "images_included": include_images, "summary": selection["summary"],
-                "analysis": "Local pixel comparison; no AI provider has been called."}
+                "images_included": False, "text_included": include_text, "summary": selection["summary"],
+                "analysis": "Local static text comparison; no AI provider has been called."}
 
+    @bp.post("/runs/<uuid:run_id>/text-reviews")
     @bp.post("/runs/<uuid:run_id>/reviews")
     def save_review(run_id):
         require_run(run_id)
@@ -126,10 +108,10 @@ def create_automation_blueprint(service):
         if not isinstance(body, dict):
             abort(400, description="Provide an AI assessment JSON object.")
         try:
-            result = service.store.save_capture_review(str(run_id), body.get("domain"), body.get("scheme"), body)
+            result = service.store.save_capture_review(str(run_id), body.get("domain"), body.get("scheme"), body, text_only=True)
         except (ValueError, TypeError) as exc:
             abort(400, description=str(exc))
-        return result
+        return {"run_id": str(run_id), "domain": result["domain"], "scheme": result["scheme"], "analysis": result["analysis"]}
 
     @bp.errorhandler(400)
     @bp.errorhandler(401)

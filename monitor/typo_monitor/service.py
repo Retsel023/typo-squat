@@ -301,9 +301,9 @@ class MonitorService:
         with self._mutex:
             return self.store.set_global_capture_filter(enabled=enabled, rules=rules)
 
-    def set_capture_policy(self, project_id, *, mode, refresh_days):
+    def set_capture_policy(self, project_id, *, mode, refresh_days, comparison="text"):
         with self._mutex:
-            return self.store.set_capture_policy(project_id, mode=mode, refresh_days=refresh_days)
+            return self.store.set_capture_policy(project_id, mode=mode, refresh_days=refresh_days, comparison=comparison)
 
     def _report_progress(self, run_id, stage, message=None, **values):
         reporter = self._progress.get(run_id)
@@ -433,6 +433,7 @@ class MonitorService:
             self.capturer.baseline_root = self.data_dir
             self.capturer.capture_route = run.get("proxy_status", {}).get("capture", {})
             self.capturer.collect_titles = True
+            self.capturer.collect_text = self.capturer.capture_policy.get("comparison", "text") == "text"
         from .proxy import direct_environment
         for adapter in (self.resolver, self.generator, self.discoverer, self.parking_classifier, self.capturer):
             if adapter is not None:

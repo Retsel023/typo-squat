@@ -14,6 +14,7 @@ from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
 from .website_probe import WebsiteProbe
 from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, matching_rule, rule_scope
+from .page_text import MAX_BODY_BYTES, MAX_TEXT_CHARS, TEXT_STATUSES
 
 
 SUPPORTED_VERSION = "3.2.2"
@@ -79,10 +80,34 @@ def _validated_preflight(diagnostics, requested):
                 or title_status == "found" and not title
                 or title_url is not None and (not isinstance(title_url, str) or len(title_url) > 2048)
                 or title_code is not None and (type(title_code) is not int or not 100 <= title_code <= 599)
-                or type(title_bytes) is not int or not 0 <= title_bytes <= 64 * 1024):
+                or type(title_bytes) is not int or not 0 <= title_bytes <= MAX_BODY_BYTES):
             raise ValueError("Website preflight returned invalid title metadata.")
         validated[url].update(title=title, title_status=title_status, title_url=title_url,
                               title_http_status=title_code, title_bytes=title_bytes)
+        content_status = entry.get("content_status", "disabled")
+        page_text = entry.get("page_text", "")
+        if (not isinstance(content_status, str) or content_status not in TEXT_STATUSES
+                or not isinstance(page_text, str) or len(page_text) > MAX_TEXT_CHARS):
+            raise ValueError("Website preflight returned invalid text metadata.")
+        for key in ("text_sha256", "content_sha256"):
+            value = entry.get(key)
+            if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)):
+                raise ValueError("Website preflight returned invalid text fingerprints.")
+        if content_status == "complete" and (not page_text or not entry.get("content_sha256") or not entry.get("text_sha256")):
+            raise ValueError("Complete text requires saved text and fingerprints.")
+        version = entry.get("content_version")
+        if version is not None and (not isinstance(version, str) or len(version) > 80):
+            raise ValueError("Invalid extraction version.")
+        validated[url].update(content_status=content_status, page_text=page_text, content_version=version,
+            text_sha256=entry.get("text_sha256"), content_sha256=entry.get("content_sha256"))
+        for key in ("links", "forms"):
+            values = entry.get(key, [])
+            if not isinstance(values, list) or len(values) > 8 or any(not isinstance(value, str) or len(value) > 256 for value in values):
+                raise ValueError("Invalid website text evidence.")
+            count = entry.get(key + "_count", 0)
+            if type(count) is not int or not 0 <= count <= 512:
+                raise ValueError("Invalid website text evidence count.")
+            validated[url].update({key: values, key + "_count": count})
     return validated
 
 
@@ -106,7 +131,8 @@ def _apply_preflight(capture, row, diagnostic, domain):
                    captured_at=diagnostic["checked_at"])
         return False
     if unchanged:
-        row.update(status="skipped", error="Title unchanged; no new screenshot requested.",
+        reason = "Page text unchanged" if diagnostic.get("skip_reason") == "unchanged_content" else "Title unchanged"
+        row.update(status="skipped", error=reason + "; no new screenshot requested.",
                    captured_at=diagnostic["checked_at"])
         return False
     return True
@@ -325,18 +351,22 @@ class GowitnessCapture:
                   for status in ("http_response", "no_http_response", "unknown")}
         title_filtered = sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows)
         title_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for row in rows)
+        text_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for row in rows)
         if title_filtered:
             detail += f" {title_filtered} endpoints excluded by configured title phrases; DNS inventory was retained."
         if title_unchanged:
             detail += f" {title_unchanged} endpoints had unchanged titles and did not request screenshots."
+        if text_unchanged:
+            detail += f" {text_unchanged} endpoints had unchanged page text and did not request screenshots."
         return {"status": "failed" if failed else "partial" if issue or unsuccessful or counts["unknown"] else "ok",
                 "detail": detail, "version": version, "required_version": SUPPORTED_VERSION,
                 "attempts": len(rows), "captured": captured,
                 "failed": sum(row["status"] == "failed" for row in rows),
                 "unavailable": sum(row["status"] == "unavailable" for row in rows),
-                "eligible": counts["http_response"] - title_filtered - title_unchanged,
+                "eligible": counts["http_response"] - title_filtered - title_unchanged - text_unchanged,
                 "title_filtered": title_filtered,
                 "title_unchanged": title_unchanged,
+                "text_unchanged": text_unchanged,
                 "titles_found": sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),
                 "launched": sum(row.get("capture_queued", False) for row in rows),
                 "skipped": sum(row["status"] == "skipped" for row in rows),
@@ -380,6 +410,7 @@ class GowitnessCapture:
             probe.progress_callback = callback
             probe.proxy_url = getattr(self, "proxy_url", None)
             probe.collect_titles = bool(getattr(self, "collect_titles", False) or getattr(self, "title_filter", {}).get("enabled"))
+            probe.collect_text = bool(getattr(self, "collect_text", False))
             diagnostics = probe.probe(list(requested))
             self._check_shutdown()
             try:
@@ -394,10 +425,11 @@ class GowitnessCapture:
             with preflight_file.open("x", encoding="utf-8") as stream:
                 json.dump(diagnostics, stream, indent=2)
             requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"
-                         and row["preflight"].get("skip_reason") not in {"title_rule", "unchanged_title"}}
+                         and row["preflight"].get("skip_reason") not in {"title_rule", "unchanged_title", "unchanged_content"}}
             progress_metrics = {"eligible": len(requested), "launched": 0,
                                 "title_filtered": sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for rows in results.values() for row in rows),
                                 "title_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for rows in results.values() for row in rows),
+                                "text_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for rows in results.values() for row in rows),
                                 "skipped": sum(row["status"] == "skipped" for rows in results.values() for row in rows)}
             _report_progress(callback, "screenshots", current=0, total=len(requested), metrics=progress_metrics)
             if not requested:

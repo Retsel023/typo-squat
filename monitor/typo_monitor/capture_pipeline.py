@@ -176,6 +176,7 @@ def capture_stream(capture, domains_iterator, workdir):
     launched = 0
     title_filtered = 0
     title_unchanged = 0
+    text_unchanged = 0
 
     def poll():
         nonlocal last_poll, issue
@@ -184,8 +185,8 @@ def capture_stream(capture, domains_iterator, workdir):
             issue = f"Gowitness exited before its input closed (status {process.returncode}); see gowitness.log."
         if monitor is not None and time.monotonic() - last_poll >= 1:
             monitor.metrics.update(eligible=len(requested), launched=launched, title_filtered=title_filtered,
-                                   title_unchanged=title_unchanged,
-                                   skipped=title_filtered + title_unchanged + sum(counts[key] for key in ("no_http_response", "unknown")), input_open=True)
+                                   title_unchanged=title_unchanged, text_unchanged=text_unchanged,
+                                   skipped=title_filtered + title_unchanged + text_unchanged + sum(counts[key] for key in ("no_http_response", "unknown")), input_open=True)
             monitor.poll()
             last_poll = time.monotonic()
 
@@ -281,6 +282,7 @@ def capture_stream(capture, domains_iterator, workdir):
         probe.run_id = getattr(capture, "run_id", "manual")
         probe.proxy_url = getattr(capture, "proxy_url", None)
         probe.collect_titles = bool(getattr(capture, "collect_titles", False) or getattr(capture, "title_filter", {}).get("enabled"))
+        probe.collect_text = bool(getattr(capture, "collect_text", False))
         feed = _PreflightFeed(capture, domains_iterator, probe, stopped)
         events = feed.events()
         for kind, value in events:
@@ -301,6 +303,7 @@ def capture_stream(capture, domains_iterator, workdir):
             eligible = _apply_preflight(capture, row, diagnostic, domain)
             title_filtered += diagnostic.get("skip_reason") == "title_rule"
             title_unchanged += diagnostic.get("skip_reason") == "unchanged_title"
+            text_unchanged += diagnostic.get("skip_reason") == "unchanged_content"
             _report_progress(callback, "websites", current=len(diagnostics), total=len(results) * 2,
                              metrics={"response": counts["http_response"],
                                       "no_response": counts["no_http_response"],
@@ -308,8 +311,8 @@ def capture_stream(capture, domains_iterator, workdir):
             if not eligible:
                 _report_progress(callback, "screenshots", metrics={"eligible": len(requested), "launched": launched,
                     "title_filtered": title_filtered,
-                    "title_unchanged": title_unchanged,
-                    "skipped": title_filtered + title_unchanged + counts["no_http_response"] + counts["unknown"]})
+                    "title_unchanged": title_unchanged, "text_unchanged": text_unchanged,
+                    "skipped": title_filtered + title_unchanged + text_unchanged + counts["no_http_response"] + counts["unknown"]})
                 continue
             requested[url] = row
             if process is None and issue is None:

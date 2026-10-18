@@ -1,4 +1,4 @@
-"""HTTP preflight with optional bounded titles; transport errors are not DNS facts."""
+"""HTTP preflight with optional bounded title/text extraction; transport errors are not DNS facts."""
 
 from contextlib import closing
 from datetime import datetime, timezone
@@ -64,7 +64,8 @@ class WebsiteProbe:
             if proxy_url:
                 session.proxies = {"http": proxy_url, "https": proxy_url}
             session.headers["User-Agent"] = "TypoMonitor-WebsitePreflight/1"
-            collect_titles = bool(getattr(self, "collect_titles", False))
+            collect_text = bool(getattr(self, "collect_text", False))
+            collect_titles = bool(getattr(self, "collect_titles", False) or collect_text)
             if collect_titles:
                 session.headers["Accept-Encoding"] = "identity"
             # Requests otherwise consumes redirect bodies while preparing
@@ -86,7 +87,7 @@ class WebsiteProbe:
                         diagnostic = result("http_response", code=code)
                         if collect_titles:
                             from .title_filter import inspect_title
-                            diagnostic.update(inspect_title(response, session, deadline, self._check_cancel))
+                            diagnostic.update(inspect_title(response, session, deadline, self._check_cancel, collect_text=collect_text))
                         return diagnostic
                 except requests.exceptions.SSLError as error:
                     tls_error = f"TLS verification/handshake failed: {type(error).__name__}."
