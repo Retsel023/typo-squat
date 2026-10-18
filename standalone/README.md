@@ -194,9 +194,16 @@ DNS-only domains stay visible, with compact protocol status instead of empty
 screenshot panels. A previous successful image is labelled as an older capture.
 Detailed checks are retained in `/data/runs/RUN_UUID/preflight.json`.
 
-To avoid browser captures for known unwanted page types, open a project and
-use **Screenshot title exclusions**. Enable the option, enter specific title
-phrases such as `GoDaddy` or a station name (one per line), and save before
+To avoid browser captures for known unwanted page types across all projects,
+use **Global exclusions** in the sidebar. Existing and new projects inherit
+this shared list. Add client-specific phrases under each project's
+**Screenshot title exclusions**. Enabled lists are combined with duplicates
+removed; a project's switch controls only its additional phrases. Each list
+allows up to 50 phrases of 120 characters and has its own enable switch.
+Global settings persist in the data volume alongside project settings.
+
+Enable the option, enter specific title phrases such as `GoDaddy` or a station
+name (one per line), and save before
 starting a scan. Matching ignores case and checks HTTP and HTTPS independently.
 The feature is off by default. Enabled checks reuse the website GET, reading
 up to 64 KiB of uncompressed HTML and following at most three redirects within
@@ -206,11 +213,14 @@ Only complete titles on final 2xx responses can skip a screenshot. Missing or
 unreadable titles and HTTP errors still reach Gowitness. JavaScript-only titles
 need the browser. Original roots and discovered source subdomains bypass title
 exclusions to preserve references. Excluded endpoints keep their DNS inventory,
-title and reason; later scans check them again. Previous images remain saved.
+title, reason and whether the rule was global or project-specific; later scans
+check them again. Previous images remain saved.
 The run report counts title exclusions separately from failures, and no image
 is sent for them in the n8n review queue. Use specific phrases: titles alone do
 not establish whether a site is safe. Changes apply to newly queued manual and
-scheduled scans. Turning the feature off restores the header-only check.
+scheduled scans. Each run saves both lists when queued and displays those
+rules in scan details. Queued/running scans keep their original settings.
+Turning both lists off restores the header-only check.
 
 MassDNS can feed this work before its bulk DNS job finishes. A domain is offered
 only after its A, AAAA and CNAME questions are complete and the positive result

@@ -183,3 +183,6 @@
 .title-filter-panel{margin-bottom:24px}.title-filter-form{padding:0 24px 24px}.title-filter-form>.checkbox-label{white-space:normal;margin-bottom:20px}.title-filter-form>label:not(.checkbox-label){display:block;margin-bottom:8px}.title-filter-form textarea{max-width:650px}.title-filter-form .field-help{margin:10px 0 16px}
 
 .capture-status>summary>.capture-status-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}.capture-status>summary>strong,.capture-status>summary>span:not(.capture-status-title){flex-shrink:0}.capture-status>div .capture-page-title{overflow-wrap:anywhere}
+
+/* Saved global and project exclusion policy for each run. */
+.run-filter-rules{font-size:12px;border:1px solid var(--line);border-radius:8px;padding:14px 18px}.run-filter-rules summary{cursor:pointer;color:var(--green)}.run-filter-rules>div{margin-top:14px}.run-filter-rules ul{margin:8px 0;padding-left:20px;overflow-wrap:anywhere}

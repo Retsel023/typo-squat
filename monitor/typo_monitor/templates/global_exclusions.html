@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Global exclusions{% endblock %}
+{% block breadcrumb %}Global exclusions{% endblock %}
+{% block content %}
+  <div class="page-heading"><div><div class="eyebrow">WORKSPACE SETTINGS</div><h1>Global title exclusions</h1><p>Shared screenshot exclusions for every project on this server.</p></div></div>
+  <section class="panel title-filter-panel" aria-labelledby="global-filter-title">
+    <div class="panel-heading"><div><h2 id="global-filter-title">Shared title phrases</h2><p>Skip new screenshots when a complete page title contains one of these phrases.</p></div><span class="badge {{ 'ok' if policy.enabled else 'neutral' }}">{{ 'Enabled' if policy.enabled else 'Off' }}</span></div>
+    <form method="post" action="{{ url_for('update_global_exclusions') }}" class="title-filter-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="checkbox-label"><input type="checkbox" name="enabled" value="1"{% if policy.enabled %} checked{% endif %}> Enable global title exclusions for all projects</label>
+      <label for="global-title-rules">Title phrases · one per line</label>
+      <textarea id="global-title-rules" name="rules" rows="8" placeholder="GoDaddy&#10;A specific radio station name" maxlength="6100">{{ policy.rules|join('\n') }}</textarea>
+      <p class="field-help">Up to 50 literal phrases, 120 characters each. Matching ignores case. Use specific names; broad phrases can hide sites you want to inspect.</p>
+      <p class="schedule-server-note">Enabled global and project phrases are combined, with duplicates removed. Project switches control only that project's additional phrases. Global rules also apply to new projects and scheduled scans. Changes affect scans queued afterward; queued and running scans keep their saved rules.</p>
+      <p class="schedule-server-note">Excluded sites retain their DNS records, title and matched rule. Every scan checks them again. HTTP and HTTPS are checked independently; original-domain references bypass exclusions. Missing or unreadable titles and HTTP error responses remain eligible for capture. A matching title does not establish that a site is safe.</p>
+      <button class="button secondary" type="submit">Save global exclusions</button>
+      <p class="field-help">Off by default. Turning this off retains your saved phrases. If a project has no enabled rules either, its preflight returns to header-only checks.</p>
+    </form>
+  </section>
+{% endblock %}

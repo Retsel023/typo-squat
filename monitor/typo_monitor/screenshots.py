@@ -13,7 +13,7 @@ import subprocess
 from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
 from .website_probe import WebsiteProbe
-from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, matching_rule
+from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, matching_rule, rule_scope
 
 
 SUPPORTED_VERSION = "3.2.2"
@@ -98,8 +98,9 @@ def _apply_preflight(capture, row, diagnostic, domain):
     rule = matching_rule(diagnostic, getattr(capture, "title_filter", {}),
                          original=domain in getattr(capture, "original_domains", set()))
     if rule:
-        diagnostic.update(skip_reason="title_rule", matched_rule=rule)
-        row.update(status="skipped", error=f"Screenshot excluded by title rule: {rule}",
+        scope = rule_scope(rule, getattr(capture, "title_filter", {}))
+        diagnostic.update(skip_reason="title_rule", matched_rule=rule, rule_scope=scope)
+        row.update(status="skipped", error=f"Screenshot excluded by title rule: {rule} ({scope})",
                    captured_at=diagnostic["checked_at"])
         return False
     return True

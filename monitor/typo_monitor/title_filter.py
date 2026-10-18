@@ -39,6 +39,27 @@ def normalize_policy(enabled=False, rules=()):
     return {"enabled": enabled, "rules": result}
 
 
+def combine_policies(global_policy, project_policy):
+    """Snapshot both scopes and deduplicate enabled phrases, global first."""
+    policies = {scope: normalize_policy(policy.get("enabled", False), policy.get("rules", []))
+                for scope, policy in (("global", global_policy), ("project", project_policy))}
+    rules, seen = [], set()
+    for policy in policies.values():
+        if policy["enabled"]:
+            for rule in policy["rules"]:
+                if rule.casefold() not in seen:
+                    rules.append(rule)
+                    seen.add(rule.casefold())
+    return {"enabled": bool(rules), "rules": rules, **policies}
+
+
+def rule_scope(rule, policy):
+    """Keep the origin of an intentional skip in immutable capture metadata."""
+    global_policy = policy.get("global", {})
+    return "global" if global_policy.get("enabled") and any(
+        value.casefold() == rule.casefold() for value in global_policy.get("rules", [])) else "project"
+
+
 class _Title(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)

@@ -156,10 +156,16 @@ saved in `preflight.json` and refreshed on every run. Domains without a respondi
 website remain in DNS inventory, with compact status rows instead of empty
 screenshot frames. An older saved screenshot is explicitly labelled as previous.
 
-The project's **Screenshot title exclusions** panel can reduce browser work.
-It is off by default. Enable it and save specific, case-insensitive literal
-phrases such as `GoDaddy` or a particular station name (one per line, up to 50
-phrases of 120 characters). With it enabled, the existing GET preflight reads
+The sidebar's **Global exclusions** page manages a shared title list for all
+existing and future projects. Each project's **Screenshot title exclusions**
+panel can add client-specific phrases. Both switches are off by default;
+enabled lists are combined and case-insensitive duplicates removed. Switching
+off project rules does not disable global rules. Each list allows up to 50
+phrases of 120 characters. Global settings persist in the same database as your
+projects, so they survive container recreation with the data volume retained.
+
+Enable a list and save specific, case-insensitive literal phrases such as
+`GoDaddy` or a particular station name, one per line. With it enabled, the existing GET preflight reads
 at most 64 KiB of uncompressed HTML, stopping after the title or head. It follows
 at most three HTTP redirects within the probe's timeout budget and uses the
 same configured website proxy. This adds a bounded body read and possibly
@@ -172,16 +178,18 @@ titles require the browser and cannot be used for this prefilter. Owned roots
 and discovered source subdomains bypass title exclusions so reference captures
 remain available. HTTP and HTTPS are evaluated independently.
 
-An excluded endpoint retains its DNS records, title, matched phrase and check
-details in `preflight.json`, saved capture metadata and reports. The run counts
+An excluded endpoint retains its DNS records, title, matched phrase, global or
+project rule origin and check details in `preflight.json`, saved capture metadata
+and reports. The run counts
 title exclusions separately, including in the AI handoff preview; excluded
 captures send no image to n8n. Existing historical screenshots are retained.
 Every later scan checks the title again, so this is not a permanent domain
 blacklist. Rules are a capture preference, not a benign-site classification:
 a malicious site can copy any title. Keep rules specific or leave the filter
 off when you need complete visual evidence. Settings are snapshotted when a run
-is queued and apply to both manual and scheduled scans. Disabling the filter
-restores the header-only preflight.
+is queued and apply to both manual and scheduled scans. Each run displays its
+saved rules from both scopes; later edits do not rewrite past reports or alter
+queued/running scans. Disabling both lists restores the header-only preflight.
 
 With MassDNS, a domain enters this pipeline only after all its A, AAAA and
 CNAME questions have completed and its positive result is validated. A bounded

@@ -369,6 +369,7 @@ def create_app(service):
                                default_count=default_count, hidden_count=counts["total"] - default_count,
                                filter_params=filter_params, view=view, schedule=schedule, dns_settings=dns_settings,
                                discovery_settings=discovery_settings,
+                               global_capture_filter=service.store.global_capture_filter(),
                                proxy_settings=proxy_settings,
                                gallery_params={**filter_params, "view": "gallery"},
                                table_params={**filter_params, "view": "table"},
@@ -567,6 +568,21 @@ def create_app(service):
             abort(400, description=str(error))
         flash("Proxy settings saved for future scans. Queued and running scans keep their original routes.", "success")
         return redirect(url_for("project_detail", project_id=project_id, _anchor="proxy-settings"), code=303)
+
+    @app.get("/settings/title-exclusions")
+    def global_exclusions():
+        return render_template("global_exclusions.html", page="global-exclusions",
+                               policy=service.store.global_capture_filter())
+
+    @app.post("/settings/title-exclusions")
+    def update_global_exclusions():
+        try:
+            service.set_global_capture_filter(enabled=request.form.get("enabled") == "1",
+                rules=[line.strip() for line in request.form.get("rules", "").splitlines() if line.strip()])
+        except ValueError as error:
+            abort(400, description=str(error))
+        flash("Global title exclusions saved for future scans in all projects. Queued and running scans keep their saved rules.", "success")
+        return redirect(url_for("global_exclusions"), code=303)
 
     @app.post("/projects/<uuid:project_id>/capture-filter")
     def update_capture_filter(project_id):

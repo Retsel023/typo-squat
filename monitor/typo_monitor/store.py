@@ -45,6 +45,9 @@ class Store:
         with self._connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY, value_json TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL,
                     roots_json TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -434,6 +437,23 @@ class Store:
             db.execute("UPDATE projects SET proxy_settings_json=? WHERE id=?", (_json(settings), project_id))
             return public_settings(settings)
 
+    @staticmethod
+    def _global_capture_filter(db):
+        row = db.execute("SELECT value_json FROM app_settings WHERE key='capture_filter'").fetchone()
+        return json.loads(row["value_json"]) if row else {"enabled": False, "rules": []}
+
+    def global_capture_filter(self):
+        with self._connection() as db:
+            return self._global_capture_filter(db)
+
+    def set_global_capture_filter(self, *, enabled, rules):
+        from .title_filter import normalize_policy
+        policy = normalize_policy(enabled, rules)
+        with self._connection(write=True) as db:
+            db.execute("""INSERT INTO app_settings(key,value_json) VALUES('capture_filter',?)
+                ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json""", (_json(policy),))
+        return policy
+
     def set_capture_filter(self, project_id, *, enabled, rules):
         from .title_filter import normalize_policy
         policy = normalize_policy(enabled, rules)
@@ -674,10 +694,12 @@ class Store:
                 raise ValueError("No saved candidate inventory yet. Run an enumeration scan first.")
             if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
                 raise RuntimeError("A scan is already running for this project.")
+            from .title_filter import combine_policies
+            capture_filter = combine_policies(self._global_capture_filter(db), json.loads(project["capture_filter_json"]))
             run_id = str(uuid4())
             db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key,capture_filter_json)
                 VALUES(?,?, 'running', ?,?,?,?,?,?)""",
-                       (run_id, project_id, _now(), workers, mode, _json(proxy_status or {}), dns_route_key, project["capture_filter_json"]))
+                       (run_id, project_id, _now(), workers, mode, _json(proxy_status or {}), dns_route_key, _json(capture_filter)))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     @staticmethod

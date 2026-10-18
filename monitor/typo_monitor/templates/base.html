@@ -15,6 +15,7 @@
     <div class="workspace-label">MONITORING WORKSPACE</div>
     <nav class="workspace-navigation" aria-label="Workspace">
       <a class="nav-link {% if page == 'overview' %}active{% endif %}" href="{{ url_for('dashboard') }}"{% if page == 'overview' %} aria-current="page"{% endif %}><span aria-hidden="true">▦</span> Overview</a>
+      <a class="nav-link {% if page == 'global-exclusions' %}active{% endif %}" href="{{ url_for('global_exclusions') }}"{% if page == 'global-exclusions' %} aria-current="page"{% endif %}><span aria-hidden="true">⊘</span> Global exclusions</a>
     </nav>
     <nav class="project-navigation" aria-label="Client projects">
       <div class="project-nav-heading"><span>PROJECTS</span><span>{{ navigation_projects|length }}</span></div>

@@ -296,6 +296,10 @@ class MonitorService:
         with self._mutex:
             return self.store.set_capture_filter(project_id, enabled=enabled, rules=rules)
 
+    def set_global_capture_filter(self, *, enabled, rules):
+        with self._mutex:
+            return self.store.set_global_capture_filter(enabled=enabled, rules=rules)
+
     def _report_progress(self, run_id, stage, message=None, **values):
         reporter = self._progress.get(run_id)
         if reporter is None:
