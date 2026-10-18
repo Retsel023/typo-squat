@@ -25,6 +25,20 @@
       <div class="schedule-actions"><button class="button secondary" type="submit"{% if demo %} disabled{% endif %}>Save DNS settings</button>{% if not dns_settings.inherited %}<button class="button quiet" type="submit" name="action" value="inherit" formnovalidate{% if demo %} disabled{% endif %}>Use server default</button>{% endif %}</div>
     </form>
   </section>
+  <section class="panel proxy-settings-panel" id="proxy-settings" aria-labelledby="proxy-settings-title">
+    <div class="panel-heading"><div><h2 id="proxy-settings-title">Proxy routes</h2><p>Enable a SOCKS5 proxy separately for each stage. All switches start off.</p></div></div>
+    <form method="post" action="{{ url_for('update_proxies', project_id=project.id) }}" class="proxy-settings-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="proxy-stage-grid">
+        {% for stage, label, help in [('discovery', '1 · Subdomain discovery', 'Routes Subfinder and Assetfinder provider requests through the proxy. Amass 4.2 is skipped while this switch is on because its internal DNS traffic cannot use the provider proxy.'), ('dns', '2 · DNS lookups', 'Routes MassDNS and DNS parking checks through SOCKS5 UDP. The proxy must support UDP ASSOCIATE. Changing this route starts a fresh DNS baseline on the first accepted scan; inventory and old reports stay saved.'), ('capture', '3 · Website checks + Gowitness', 'Routes both the preliminary HTTP/HTTPS checks and Chromium website captures through the same proxy. Useful when the direct connection is filtered by your network.')] %}
+        {% set setting = proxy_settings[stage] %}
+        <div class="proxy-stage"><label class="proxy-switch"><input type="checkbox" role="switch" name="{{ stage }}_enabled" value="1"{% if setting.enabled %} checked{% endif %}{% if demo %} disabled{% endif %}><span class="proxy-switch-track" aria-hidden="true"></span><strong>{{ label }}</strong></label><p>{{ help }}</p><p class="proxy-current">Configured: {{ setting.endpoint }}</p><label for="proxy-{{ stage }}">{{ 'Replace proxy URL' if setting.configured else 'Proxy URL' }}</label><input id="proxy-{{ stage }}" name="{{ stage }}_url" type="password" autocomplete="new-password" maxlength="2048" placeholder="{{ 'Leave empty to keep the configured proxy' if setting.configured else 'socks5h://user:password@host:1080' }}"{% if demo %} disabled{% endif %}>{% if setting.configured %}<label class="checkbox-label proxy-clear"><input type="checkbox" name="{{ stage }}_clear" value="1"{% if demo %} disabled{% endif %}> Clear saved proxy and turn off</label>{% endif %}</div>
+        {% endfor %}
+      </div>
+      <p class="schedule-server-note">Use the same proxy URL for multiple stages if desired. Username/password are optional; percent-encode special characters in them. Proxy URLs are stored on this server and credentials are hidden from reports. IP rotation depends on your proxy provider; a proxy does not guarantee protection from throttling or blocking. Existing concurrency limits still apply.</p>
+      <button class="button secondary" type="submit"{% if demo %} disabled{% endif %}>Save proxy settings</button><p class="field-help">Changes apply to scans queued afterward, including scheduled scans. Saving these settings does not contact the proxy.</p>
+    </form>
+  </section>
   <section class="panel schedule-panel" id="schedule" aria-labelledby="schedule-title">
     <div class="schedule-heading"><div><h2 id="schedule-title">Scan schedules</h2><p>Separate intervals for full enumeration and saved-inventory checks.{% if schedule.inherited and not demo %} Your previous server schedule applies until you save these settings.{% endif %}</p></div>{% if demo %}<span class="badge neutral">Demo · read only</span>{% elif not schedule.interval_hours %}<span class="badge neutral">Both off</span>{% endif %}</div>
     <form method="post" action="{{ url_for('update_schedule', project_id=project.id) }}" class="split-schedule-form">

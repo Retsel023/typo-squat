@@ -114,6 +114,8 @@ class Subfinder:
             command = [self.executable, "-d", root, "-silent"]
             if self.all_sources:
                 command.append("-all")
+            if getattr(self, "proxy_url", None):
+                command.extend(["-proxy", self.proxy_url])
             _report_progress(callback, "discovery", f"Subfinder: discovering subdomains for {root}.",
                              current=index, total=len(roots), metrics={"discovered": len(found)})
             try:
@@ -122,6 +124,7 @@ class Subfinder:
                         command,
                         stdout=stdout, stderr=stderr, timeout=self.timeout,
                         cancel_event=getattr(self, "cancel_event", None), text=True,
+                        env=getattr(self, "proxy_environment", None),
                     )
                 # A timed-out/failed source may still have useful partial output.
                 if result.returncode:
@@ -250,6 +253,11 @@ class DnsResolver:
         resolver = self.resolver_factory() if self.resolver_factory else dns.resolver.Resolver()
         if self.nameservers:
             resolver.nameservers = self.nameservers
+        proxy_routes = getattr(self, "proxy_routes", None)
+        if proxy_routes is not None:
+            proxy_routes.check()
+            resolver.nameservers = list(proxy_routes.ports)
+            resolver.nameserver_ports = dict(proxy_routes.ports)
         resolver.lifetime = self.lifetime
         resolver.timeout = min(self.lifetime, 2)
         records, failures, negatives = set(), [], 0

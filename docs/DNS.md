@@ -137,3 +137,19 @@ can still be retained as partial findings. Historical runs are not rewritten.
 These backend changes have not been built, benchmarked or tested here. The
 existing browser preflight still checks HTTP/HTTPS before starting Gowitness;
 DNS resolution alone does not launch a browser.
+
+## Optional SOCKS5 DNS route
+
+The per-project **DNS lookups** proxy switch uses a SOCKS5 UDP association to each
+configured recursive resolver. MassDNS talks to isolated loopback relays; the
+relay checks the returned upstream IP/port and DNS question, restores its
+transaction ID, then the existing wire parser still validates the full response.
+The resolver allowlist includes only the exact ephemeral loopback endpoints for
+that run. Resolver order/balancing continues to use the original upstream order.
+Parking and the explicit dnspython backend use the same DNS route. Proxy failures
+remain unknown; there is no direct fallback or synthesized negative answer.
+A TCP-only SOCKS server is not sufficient. The first accepted informative run
+after an enabled DNS URL change or on/off transition establishes a new baseline,
+restarts negative counters and suppresses cross-route DNS events. Inventory and
+old reports are retained. Provider-controlled rotating exits can still introduce
+geographic DNS differences within the same saved route.

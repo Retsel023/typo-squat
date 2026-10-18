@@ -106,6 +106,11 @@ class ParkingClassifier:
             resolver = dns.resolver.Resolver()
             if self.nameservers:
                 resolver.nameservers = self.nameservers
+            proxy_routes = getattr(self, "proxy_routes", None)
+            if proxy_routes is not None:
+                proxy_routes.check()
+                resolver.nameservers = list(proxy_routes.ports)
+                resolver.nameserver_ports = dict(proxy_routes.ports)
             resolver.lifetime = self.lifetime
             resolver.timeout = min(self.lifetime, 2)
             answer = resolver.resolve(domain, "NS", lifetime=self.lifetime,

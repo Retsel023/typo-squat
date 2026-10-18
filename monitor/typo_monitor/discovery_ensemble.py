@@ -11,7 +11,7 @@ from .adapters import _report_progress
 from .domains import normalize_domain
 
 
-_STATUSES = frozenset({"ok", "partial", "unavailable", "failed", "cancelled"})
+_STATUSES = frozenset({"ok", "partial", "unavailable", "failed", "cancelled", "skipped"})
 
 
 class CombinedDiscovery:
@@ -109,6 +109,8 @@ class CombinedDiscovery:
             adapter.run_id = getattr(self, "run_id", None)
             adapter.workdir = directories[key]
             adapter.progress_callback = child_callback(key)
+            adapter.proxy_url = getattr(self, "proxy_url", None)
+            adapter.proxy_environment = getattr(self, "proxy_environment", None)
             try:
                 return adapter.discover(roots, directories[key])
             except Exception as exc:
@@ -175,7 +177,7 @@ class CombinedDiscovery:
         cancelled = self._cancelled() or any(state["status"] == "cancelled" for state in statuses.values())
         usable = bool(provenance) or any(state["status"] == "ok" for state in statuses.values())
         state = ("cancelled" if cancelled else "unavailable" if not usable else
-                 "ok" if all(item["status"] == "ok" for item in statuses.values()) else "partial")
+                 "ok" if all(item["status"] in {"ok", "skipped"} for item in statuses.values()) else "partial")
         detail = ("Discovery cancelled; previously accepted inventory was preserved." if cancelled else
                   "All discovery engines failed or were unavailable; retained seeds and candidates are still checked." if not usable else
                   f"Combined {total} engines into {len(provenance):,} unique in-scope names. "

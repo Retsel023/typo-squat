@@ -56,9 +56,13 @@ class WebsiteProbe:
                     "error": error, "tls_error": tls_error, "tls_verified": tls_verified,
                     "checked_at": datetime.now(timezone.utc).isoformat()}
 
-        # No proxy/.netrc/environment behavior, and no Session shared by threads.
+        # Only an explicit run proxy is used; no environment/.netrc settings
+        # and no Session shared by threads.
         with requests.Session() as session:
             session.trust_env = False
+            proxy_url = getattr(self, "proxy_url", None)
+            if proxy_url:
+                session.proxies = {"http": proxy_url, "https": proxy_url}
             session.headers["User-Agent"] = "TypoMonitor-WebsitePreflight/1"
             # Requests otherwise consumes redirect bodies while preparing
             # Response.next, even with allow_redirects=False and stream=True.
@@ -87,6 +91,8 @@ class WebsiteProbe:
                 except requests.exceptions.Timeout as error:
                     return result("unknown", f"Website check uncertain: {type(error).__name__}.")
                 except requests.exceptions.ConnectionError as error:
+                    if proxy_url:
+                        return result("unknown", "Website check uncertain: connection through the configured proxy failed.")
                     if tls_error or _name_resolution_error(error):
                         return result("unknown", "Website check uncertain: connection failed during TLS fallback or name resolution.")
                     return result("no_http_response", f"No HTTP response: {type(error).__name__}.")

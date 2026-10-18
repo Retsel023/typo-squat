@@ -352,6 +352,8 @@ def create_app(service):
         discovery_settings = (service.discovery_status(project) if hasattr(service, "discovery_status") else
             {"mode": project.get("discovery_mode", "enumerate"), "cached_available": bool(counts["total"]),
              "enumeration_enabled": getattr(service, "discovery", True)})
+        from .proxy import public_settings
+        proxy_settings = public_settings(service.store.proxy_settings(str(project_id)))
         return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
                                counts=counts, query=query, status_filter=status,
                                runs=runs, last_run=last_run, page="project", history_page=history_page,
@@ -365,6 +367,7 @@ def create_app(service):
                                default_count=default_count, hidden_count=counts["total"] - default_count,
                                filter_params=filter_params, view=view, schedule=schedule, dns_settings=dns_settings,
                                discovery_settings=discovery_settings,
+                               proxy_settings=proxy_settings,
                                gallery_params={**filter_params, "view": "gallery"},
                                table_params={**filter_params, "view": "table"},
                                has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved"))
@@ -545,6 +548,23 @@ def create_app(service):
             abort(400, description=str(error))
         flash("Project name updated.", "success")
         return redirect(url_for("project_detail", project_id=project_id, _anchor="manage-project"), code=303)
+
+    @app.post("/projects/<uuid:project_id>/proxies")
+    def update_proxies(project_id):
+        project = project_or_404(project_id)
+        if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
+            abort(409, description="Create a real project to configure proxy routes.")
+        from .proxy import STAGES
+        changes = {stage: {"enabled": request.form.get(stage + "_enabled") == "1",
+                           "url": request.form.get(stage + "_url", ""),
+                           "clear": request.form.get(stage + "_clear") == "1"} for stage in STAGES}
+        try:
+            service.set_proxy_settings(str(project_id), changes)
+        except ValueError as error:
+            # Validation messages are fixed text and never echo supplied URLs.
+            abort(400, description=str(error))
+        flash("Proxy settings saved for future scans. Queued and running scans keep their original routes.", "success")
+        return redirect(url_for("project_detail", project_id=project_id, _anchor="proxy-settings"), code=303)
 
     def finish_deletion(pending):
         if pending:

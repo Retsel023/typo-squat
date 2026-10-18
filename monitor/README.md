@@ -241,6 +241,77 @@ again or **Use saved inventory** for that manual run. **Default for manual scans
 preselects this choice; each automatic cadence selects its own mode. Each queued
 run snapshots its mode and concurrency. See [scan modes](../docs/DISCOVERY.md#choosing-whether-to-enumerate).
 
+## Per-stage SOCKS5 proxies
+
+Each project's **Proxy routes** panel has three independent off/on switches:
+
+1. **Subdomain discovery** sends Subfinder and Assetfinder's provider HTTP(S)
+   requests through SOCKS5. The monitor supplies their native HTTP proxy interfaces
+   with a private loopback bridge. Amass **4.2.0 is explicitly skipped** while this
+   switch is on: its separate resolver traffic is not covered by a provider HTTP
+   proxy. No direct Amass process is launched. Turn this switch off to use normal
+   three-engine discovery, or select combined/Subfinder/Assetfinder when proxying.
+2. **DNS lookups** routes MassDNS A/AAAA/CNAME requests and subsequent DNS parking
+   checks over SOCKS5 **UDP ASSOCIATE**. The optional dnspython backend uses the
+   same relays. A TCP-only SOCKS server, including a typical SSH dynamic forward,
+   is insufficient for this switch. Original upstream resolver IPs, question types
+   and ordering/balancing remain unchanged; loopback endpoint/port allowlists are
+   validated separately. Proxy/relay errors never become negative DNS evidence.
+3. **Website checks + Gowitness** routes the header preflight and Chromium's
+   HTTP(S) page requests through the same SOCKS5 endpoint. Browser captures keep
+   their native `--chrome-proxy` route via a credential-free loopback bridge;
+   TLS remains end-to-end. The Linux/POSIX browser launcher disables QUIC and the
+   implicit loopback website bypass. Browser control channels stay local. This
+   switch can help inspect websites when direct access from the scanner is
+   filtered by its firewall.
+
+Enter `socks5h://host:1080` or `socks5h://user:password@host:1080` for each stage;
+`socks5://` is also accepted and uses remote hostname resolution. The same URL
+can be used for all three stages. The SOCKS server must be reachable from the
+scanner container and support an IPv4 outer connection. In Docker, `localhost`
+means the container, not the host or the computer running the web browser.
+Remote DNS resolver destinations can still be IPv4 or IPv6.
+
+The switches default to off for existing and new projects. Save them before
+queueing a scan; manual/API/scheduled runs snapshot the selected routes and show
+those routes in their details. Changing settings does not alter queued/running
+work. An empty URL field retains a configured proxy, switching off retains its
+URL, and **Clear saved proxy and turn off** removes it. Saving settings performs
+no proxy connection or test. Proxies are never selected implicitly from the
+server's `HTTP_PROXY`/`HTTPS_PROXY` environment when a stage is off.
+
+Proxy URLs, including credentials, are stored in this project's local SQLite
+settings. Inputs are never prefilled with credentials; reports, source metadata,
+exports and command arguments contain only redacted endpoint/loopback addresses.
+Private URLs are held in worker memory for queued runs and released afterward.
+Report deletion keeps project settings; deleting the project removes them.
+The optional automation API can start scans using these settings but cannot edit
+or retrieve proxy credentials.
+
+A different enabled DNS proxy URL, or switching DNS proxying on/off, makes the
+first informative accepted run a fresh DNS baseline. Existing inventory and
+historical reports remain; negative-confirmation counters restart and that scan
+emits no cross-route DNS changes. Failed runs do not replace the accepted baseline.
+The resolver-set comparison guard still applies. Rotating exits may produce
+geographic DNS differences even with one saved URL; use a stable DNS exit when
+consistent monitoring observations matter.
+
+Routing does not increase configured concurrency or guarantee freedom from
+throttling/blocking. IP rotation comes from the provider's configuration, not
+SOCKS5 itself. API-key/account/destination and proxy-side limits still apply.
+The website preflight retains its configured `--web-timeout` (default 3 seconds);
+allow a longer budget when your proxy adds latency. DNS transport failure closes
+the affected route; HTTP bridge failures close the connection without synthesizing
+a website response, and neither route retries directly.
+
+The image installs pinned **PySocks 1.7.1**. Rebuild/recreate it to include the new
+dependency; no proxy endpoint, credential, Docker action or network test is
+configured automatically. Native users install the updated requirements. The
+implementation uses per-route sockets rather than global socket monkeypatching.
+Protocol/library references: [SOCKS5](https://www.rfc-editor.org/rfc/rfc1928),
+[PySocks](https://github.com/Anorov/PySocks), and
+[Gowitness's pinned proxy flag](https://github.com/sensepost/gowitness/blob/601c84367aaf26eae7d1b5181b70633cb662cf66/cmd/scan.go#L158).
+
 ## Rename projects and remove saved reports
 
 Use **Manage project** on the client's page to change its display name. Roots,

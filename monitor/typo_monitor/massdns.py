@@ -80,10 +80,13 @@ def _responder(value, allowed):
         host, separator, port = value[1:].partition("]:")
     else:
         host, separator, port = value.rpartition(":")
-    if not separator or port != "53":
+    if not separator or not port.isdigit():
         return False
     try:
-        return str(ipaddress.ip_address(host)) in allowed
+        host = str(ipaddress.ip_address(host))
+        if isinstance(allowed, dict):
+            return allowed.get(host) == int(port)
+        return port == "53" and host in allowed
     except ValueError:
         return False
 
@@ -151,7 +154,7 @@ def _parse_reply(row, domain, query_type, nameservers):
             or len(flags) != len(set(flags)) or "tc" in flags):
         return _unknown("Missing, malformed or truncated DNS response flags.")
     if not _responder(row.get("resolver"), nameservers):
-        return _unknown("DNS response is not from a configured resolver on port 53.")
+        return _unknown("DNS response is not from a configured resolver endpoint.")
     if row.get("proto") not in {"UDP", "TCP"}:
         return _unknown("Missing or unsupported DNS response protocol.")
     if (not isinstance(data, dict) or set(data) - {"answers", "authorities", "additionals"}
@@ -508,6 +511,11 @@ class MassDnsResolver(DnsResolver):
                 raise ValueError("No configured DNS resolvers are available.")
             if len(servers) > 16:
                 raise ValueError("Configure at most 16 recursive DNS resolver IPs.")
+            proxy_routes = getattr(self, "proxy_routes", None)
+            if proxy_routes is not None:
+                proxy_routes.check()
+                ordered_servers = [proxy_routes.by_resolver[server] for server in ordered_servers]
+                servers = dict(proxy_routes.ports)
             input_path, server_path = workdir / "massdns-input.txt", workdir / "massdns-resolvers.txt"
             output_path, stderr_path = workdir / "massdns.jsonl", workdir / "massdns.stderr.log"
             with _create(input_path) as target:
@@ -520,7 +528,8 @@ class MassDnsResolver(DnsResolver):
                         selected = selected[offset:] + selected[:offset]
                     target.write((domain + " " + " ".join(selected) + "\n").encode("ascii"))
             with _create(server_path) as target:
-                target.write(("\n".join(sorted(servers)) + "\n").encode("ascii"))
+                endpoints = proxy_routes.by_resolver.values() if proxy_routes is not None else sorted(servers)
+                target.write(("\n".join(endpoints) + "\n").encode("ascii"))
             local_stop = threading.Event()
             reader = _OutputReader(output_path, stderr_path, domains, servers, local_stop, self._check_cancel,
                                    getattr(self, "result_callback", None))
@@ -528,6 +537,12 @@ class MassDnsResolver(DnsResolver):
 
             def tick():
                 nonlocal last_report
+                if proxy_routes is not None:
+                    try:
+                        proxy_routes.check()
+                    except RuntimeError:
+                        reader.reject("SOCKS5 DNS relay failed; no direct fallback was used.")
+                        return
                 reader.poll()
                 metrics = {**reader.counts, "queries_completed": reader.completed_questions,
                            "queries_total": len(domains) * len(QUERY_TYPES), "concurrency": self.workers}

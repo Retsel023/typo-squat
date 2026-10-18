@@ -84,6 +84,7 @@ class Assetfinder:
                         stdout=stdout, stderr=stderr, timeout=self.timeout,
                         cancel_event=getattr(self, "cancel_event", None),
                         shell=False, text=True, cwd=workdir,
+                        env=getattr(self, "proxy_environment", None),
                     )
                 if result.returncode:
                     errors.append(f"{root}: exit {result.returncode}; see {log.name}")

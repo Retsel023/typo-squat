@@ -29,7 +29,8 @@ def _json(value) -> str:
 
 class Store:
     _RUN_SUMMARY_COLUMNS = ("id,project_id,status,started_at,finished_at,is_baseline,"
-                            "'[]' AS events_json,counts_json,source_status_json,error,dns_workers,discovery_mode,report_deleted")
+                            "'[]' AS events_json,counts_json,source_status_json,error,dns_workers,discovery_mode,report_deleted,"
+                            "proxy_status_json,dns_route_key")
     _STATE_QUERY = """SELECT d.*,
         EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id
             AND i.domain=d.domain AND i.kind='seed') AS is_seed,
@@ -144,6 +145,10 @@ class Store:
                 db.execute("ALTER TABLE projects ADD COLUMN dns_workers INTEGER")
             if "discovery_mode" not in columns:
                 db.execute("ALTER TABLE projects ADD COLUMN discovery_mode TEXT NOT NULL DEFAULT 'enumerate'")
+            if "proxy_settings_json" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN proxy_settings_json TEXT NOT NULL DEFAULT '{}'")
+            if "dns_route_key" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN dns_route_key TEXT NOT NULL DEFAULT 'direct'")
             run_columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)")}
             if "dns_workers" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN dns_workers INTEGER")
@@ -151,6 +156,10 @@ class Store:
                 db.execute("ALTER TABLE runs ADD COLUMN discovery_mode TEXT")
             if "report_deleted" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN report_deleted INTEGER NOT NULL DEFAULT 0")
+            if "proxy_status_json" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN proxy_status_json TEXT NOT NULL DEFAULT '{}'")
+            if "dns_route_key" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN dns_route_key TEXT NOT NULL DEFAULT 'direct'")
             db.execute("""CREATE INDEX IF NOT EXISTS project_schedule_due ON projects(schedule_next_run_at)
                 WHERE schedule_interval_hours>0""")
             capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
@@ -180,6 +189,10 @@ class Store:
         if row is None:
             return None
         result = dict(row)
+        # Private proxy URLs may contain credentials; no normal project reader,
+        # template, API response or export is allowed to receive those URLs.
+        result.pop("proxy_settings_json", None)
+        result.pop("dns_route_key", None)
         result["roots"] = json.loads(result.pop("roots_json"))
         scope_json = result.pop("comparison_scope_json")
         result["comparison_scope"] = json.loads(scope_json) if scope_json is not None else None
@@ -203,6 +216,8 @@ class Store:
             result[key] = json.loads(result.pop(key + "_json"))
         result["is_baseline"] = bool(result["is_baseline"])
         result["report_deleted"] = bool(result.get("report_deleted", False))
+        result["proxy_status"] = json.loads(result.pop("proxy_status_json", "{}"))
+        result.pop("dns_route_key", None)
         return result
 
     @staticmethod
@@ -381,6 +396,31 @@ class Store:
         with self._connection(write=True) as db:
             self._require_project(db, project_id)
             db.execute("UPDATE projects SET name=? WHERE id=?", (name.strip(), project_id))
+
+    def proxy_settings(self, project_id):
+        """Private worker/settings access. Never put this return value in logs."""
+        with self._connection() as db:
+            project = self._require_project(db, project_id)
+            return json.loads(project["proxy_settings_json"])
+
+    def set_proxy_settings(self, project_id, changes):
+        from .proxy import STAGES, validate_url, public_settings
+        if set(changes) != set(STAGES):
+            raise ValueError("Provide settings for all three proxy stages.")
+        with self._connection(write=True) as db:
+            project = self._require_project(db, project_id)
+            settings = json.loads(project["proxy_settings_json"])
+            for stage in STAGES:
+                change = changes[stage]
+                value = "" if change.get("clear") else change.get("url", "").strip() or settings.get(stage, {}).get("url", "")
+                enabled = bool(change.get("enabled")) and not change.get("clear")
+                if value:
+                    validate_url(value)
+                if enabled and not value:
+                    raise ValueError(f"Configure a SOCKS5 proxy before enabling {stage}.")
+                settings[stage] = {"enabled": enabled, "url": value}
+            db.execute("UPDATE projects SET proxy_settings_json=? WHERE id=?", (_json(settings), project_id))
+            return public_settings(settings)
 
     @staticmethod
     def _require_idle(db, project_id):
@@ -603,7 +643,7 @@ class Store:
             return {row[0] for row in db.execute(
                 "SELECT seed FROM generation_markers WHERE project_id=? AND signature=?", (project_id, signature))}
 
-    def start_run(self, project_id, *, dns_workers=None, discovery_mode=None):
+    def start_run(self, project_id, *, dns_workers=None, discovery_mode=None, proxy_status=None, dns_route_key="direct"):
         dns_workers = self._dns_workers(dns_workers)
         with self._connection(write=True) as db:
             project = self._require_project(db, project_id)
@@ -615,8 +655,9 @@ class Store:
             if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
                 raise RuntimeError("A scan is already running for this project.")
             run_id = str(uuid4())
-            db.execute("INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode) VALUES(?,?, 'running', ?,?,?)",
-                       (run_id, project_id, _now(), workers, mode))
+            db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key)
+                VALUES(?,?, 'running', ?,?,?,?,?)""",
+                       (run_id, project_id, _now(), workers, mode, _json(proxy_status or {}), dns_route_key))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     @staticmethod
@@ -704,7 +745,8 @@ class Store:
             db.executemany("INSERT OR IGNORE INTO candidate_sources VALUES(?,?,?)",
                            [(project_id, domain, seed) for domain, sources in normalized_provenance.items() for seed in sorted(sources)])
             db.executemany("INSERT OR IGNORE INTO domain_states(project_id,domain) VALUES(?,?)", [(project_id, d) for d in sorted(candidate_set)])
-            baseline = project["baseline_run_id"] is None
+            route_changed = run["dns_route_key"] != project["dns_route_key"]
+            baseline = project["baseline_run_id"] is None or route_changed
             informative = any(o["status"] != "unknown" for o in normalized.values())
             preceding = db.execute(
                 "SELECT status FROM runs WHERE project_id=? AND id<>? ORDER BY started_at DESC, rowid DESC LIMIT 1",
@@ -715,6 +757,8 @@ class Store:
             finished_at = _now()
             for domain, observation in sorted(normalized.items()):
                 previous = self._state(db.execute("SELECT * FROM domain_states WHERE project_id=? AND domain=?", (project_id, domain)).fetchone())
+                if route_changed:
+                    previous.update(status="unknown", missing_count=0)
                 current = dict(previous)
                 if interrupted_sequence:
                     current["missing_count"] = 0
@@ -764,6 +808,8 @@ class Store:
                     WHERE project_id=? AND domain=?""", (project_id, domain))
                 db.execute("""UPDATE domain_enrichment SET parking_status='unknown',parking_provider=NULL,
                     parking_evidence_json='[]',parking_checked_at=NULL WHERE project_id=? AND domain=?""", (project_id, domain))
+                if route_changed:
+                    db.execute("UPDATE domain_states SET status='unknown' WHERE project_id=? AND domain=?", (project_id, domain))
             counts = {"seeds": db.execute("SELECT COUNT(*) FROM inventory WHERE project_id=? AND kind='seed'", (project_id,)).fetchone()[0],
                       "candidates": len(candidate_set), "checked": len(normalized), "events": len(events)}
             counts.update({status: sum(o["status"] == status for o in normalized.values())
@@ -794,7 +840,7 @@ class Store:
             db.execute("""UPDATE runs SET status=?,finished_at=?,is_baseline=?,events_json=?,counts_json=?,
                 source_status_json=? WHERE id=?""", (status, finished_at, baseline and informative, _json(events), _json(counts), source_json, run_id))
             if baseline and informative:
-                db.execute("UPDATE projects SET baseline_run_id=? WHERE id=?", (run_id, project_id))
+                db.execute("UPDATE projects SET baseline_run_id=?,dns_route_key=? WHERE id=?", (run_id, run["dns_route_key"], project_id))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     def fail_run(self, run_id, error, *, source_status=None):

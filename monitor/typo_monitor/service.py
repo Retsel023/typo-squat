@@ -1,6 +1,7 @@
 """Single-process scan worker with durable inventory and isolated run artifacts."""
 
 from concurrent.futures import CancelledError, ThreadPoolExecutor
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from importlib import metadata
 from pathlib import Path
@@ -119,6 +120,7 @@ class MonitorService:
         self._futures = {}
         self._cancel_events = {}
         self._progress = {}
+        self._proxy_snapshots = {}
         self._execution = threading.local()
         self._closed = threading.Event()
         for adapter in (self.resolver, self.generator, self.discoverer):
@@ -286,6 +288,10 @@ class MonitorService:
         with self._mutex:
             return self.store.set_schedules(project_id, intervals, discovery_mode=discovery_mode)
 
+    def set_proxy_settings(self, project_id, changes):
+        with self._mutex:
+            return self.store.set_proxy_settings(project_id, changes)
+
     def _report_progress(self, run_id, stage, message=None, **values):
         reporter = self._progress.get(run_id)
         if reporter is None:
@@ -318,8 +324,12 @@ class MonitorService:
                 raise ValueError("No saved candidate inventory yet. Run an enumeration scan first.")
             scope = self.resolver.comparison_scope() if hasattr(self.resolver, "comparison_scope") else {"resolver": "injected"}
             self.store.bind_comparison_scope(project_id, scope)
+            from .proxy import public_settings, dns_route_key
+            proxy_settings = self.store.proxy_settings(project_id)
             run = self.store.start_run(project_id, dns_workers=self.dns_status(project)["workers"],
-                                       discovery_mode=mode)
+                                       discovery_mode=mode, proxy_status=public_settings(proxy_settings),
+                                       dns_route_key=dns_route_key(proxy_settings))
+            self._proxy_snapshots[run["id"]] = proxy_settings
             requested = self._cancel_events[run["id"]] = threading.Event()
             try:
                 self._progress[run["id"]] = RunProgress(self.data_dir, run["id"])
@@ -337,6 +347,7 @@ class MonitorService:
                 self.store.fail_run(run["id"], str(exc))
                 self._report_progress(run["id"], "failed", f"Could not start the scan: {exc}", level="error")
                 self._progress.pop(run["id"], None)
+                self._proxy_snapshots.pop(run["id"], None)
                 raise
             # Retain only outstanding work. History itself is durable in SQLite.
             self._futures = {key: future for key, future in self._futures.items() if not future.done()}
@@ -361,6 +372,7 @@ class MonitorService:
                 self._futures.pop(run_id, None)
                 self._cancel_events.pop(run_id, None)
                 self._progress.pop(run_id, None)
+                self._proxy_snapshots.pop(run_id, None)
             return result
 
     def scan_now(self, project_id, *, discovery_mode=None):
@@ -378,6 +390,8 @@ class MonitorService:
         run_id, project_id = run["id"], run["project_id"]
         workdir = self.data_dir / "runs" / run_id
         source_status = {}
+        routes = ExitStack()
+        proxy_settings = self._proxy_snapshots.get(run_id, {})
         requested = self._cancel_events[run_id]
         self._execution.cancel = requested
         def report(stage, message=None, **values):
@@ -390,12 +404,16 @@ class MonitorService:
             self.parking_classifier.workers = workers
         if self.capturer is not None:
             self.capturer.probe_workers = workers
+        from .proxy import direct_environment
         for adapter in (self.resolver, self.generator, self.discoverer, self.parking_classifier, self.capturer):
             if adapter is not None:
                 adapter.cancel_event = signal
                 adapter.run_id = run_id
                 adapter.progress_callback = report
                 adapter.workdir = workdir
+                adapter.proxy_url = None
+                adapter.proxy_environment = direct_environment()
+                adapter.proxy_routes = None
         try:
             self._check_shutdown()
             workdir.mkdir(parents=True)
@@ -413,6 +431,12 @@ class MonitorService:
                 report("discovery", f"Using saved inventory: {len(old['seeds']):,} seeds and "
                        f"{len(old['candidates']):,} candidates. Subdomain enumeration and typo generation are skipped.")
             elif self.discovery:
+                if proxy_settings.get("discovery", {}).get("enabled"):
+                    from .proxy import HttpProxy, SocksEndpoint
+                    route = HttpProxy(SocksEndpoint(proxy_settings["discovery"]["url"]))
+                    routes.callback(route.close)
+                    self.discoverer.proxy_url = route.url
+                    self.discoverer.proxy_environment = route.environment()
                 report("discovery", f"Discovering subdomains with {engine} for {len(project['roots'])} root domains.",
                        current=0, total=len(project["roots"]))
                 LOG.info("Run %s: discovery starting with %s for %d roots", run_id, engine, len(project["roots"]))
@@ -500,6 +524,22 @@ class MonitorService:
                     "--max-candidates (TYPO_MAX_CANDIDATES in Compose); saved inventory and baseline were preserved.")
             (workdir / "candidates.txt").write_text("\n".join(candidates) + "\n", encoding="utf-8")
             backend = getattr(self.resolver, "name", type(self.resolver).__name__)
+            if proxy_settings.get("dns", {}).get("enabled"):
+                from .proxy import DnsRoutes, SocksEndpoint
+                dns_routes = DnsRoutes(SocksEndpoint(proxy_settings["dns"]["url"]),
+                                       self.resolver.comparison_scope()["nameservers"], cancel_event=signal)
+                routes.callback(dns_routes.close)
+                self.resolver.proxy_routes = dns_routes
+                if self.parking_classifier is not None:
+                    self.parking_classifier.proxy_routes = dns_routes
+            if self.capturer is not None and proxy_settings.get("capture", {}).get("enabled"):
+                from .proxy import HttpProxy, SocksEndpoint
+                route = HttpProxy(SocksEndpoint(proxy_settings["capture"]["url"]))
+                routes.callback(route.close)
+                self.capturer.proxy_url = route.url
+            source_status["network"] = {"status": "ok", "routes": run.get("proxy_status", {}),
+                "detail": "Selected HTTP/DNS routes have no direct fallback on proxy failure. "
+                          "A changed DNS route establishes a fresh DNS baseline on acceptance."}
             def resolve_candidates():
                 try:
                     return self.resolver.resolve(candidates)
@@ -629,6 +669,11 @@ class MonitorService:
                 report("failed", f"{type(exc).__name__}: {exc}", level="error")
                 return self.store.fail_run(run_id, f"{type(exc).__name__}: {exc}", source_status=source_status)
         finally:
+            try:
+                routes.close()
+            except Exception:
+                LOG.exception("Could not close all proxy relays for run %s", run_id)
+            self._proxy_snapshots.pop(run_id, None)
             self._cancel_events.pop(run_id, None)
             self._progress.pop(run_id, None)
             self._execution.cancel = None
@@ -675,6 +720,7 @@ class MonitorService:
                         self.store.fail_run(run_id, "Server stopped before this queued scan began.")
                         self._report_progress(run_id, "failed", "Server stopped before this queued scan began.", level="error")
                     self._progress.pop(run_id, None)
+                    self._proxy_snapshots.pop(run_id, None)
         self._executor.shutdown(wait=True)
         self._instance.close()
 

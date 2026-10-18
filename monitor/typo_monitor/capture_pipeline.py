@@ -214,8 +214,13 @@ def capture_stream(capture, domains_iterator, workdir):
                    "--threads", str(capture.threads), "--timeout", "60",
                    "--chrome-path", capture.chrome_path, "--driver", capture.driver,
                    "--log-scan-errors", "--skip-html", "--skip-network-logs"]
+        if getattr(capture, "proxy_url", None):
+            command.extend(["--chrome-proxy", capture.proxy_url])
+            from .proxy import browser_command
+            command[command.index("--chrome-path") + 1] = browser_command(capture.chrome_path, workdir)
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
-                                   shell=False, cwd=workdir, bufsize=0, start_new_session=os.name == "posix")
+                                   shell=False, cwd=workdir, bufsize=0, start_new_session=os.name == "posix",
+                                   env=getattr(capture, "proxy_environment", None))
         os.set_blocking(process.stdin.fileno(), False)
         monitor = _JsonlProgress(metadata, workdir, [], callback, {})
         _report_progress(callback, "screenshots", "Capturing responsive endpoints while DNS checks continue.",
@@ -271,6 +276,7 @@ def capture_stream(capture, domains_iterator, workdir):
             timeout=capture.probe_timeout, workers=capture.probe_workers)
         probe.cancel_event = _CombinedSignal(capture.cancel_event, stopped)
         probe.run_id = getattr(capture, "run_id", "manual")
+        probe.proxy_url = getattr(capture, "proxy_url", None)
         feed = _PreflightFeed(capture, domains_iterator, probe, stopped)
         events = feed.events()
         for kind, value in events:

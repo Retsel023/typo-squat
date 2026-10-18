@@ -328,6 +328,7 @@ class GowitnessCapture:
             probe.cancel_event = self.cancel_event
             probe.run_id = getattr(self, "run_id", "manual")
             probe.progress_callback = callback
+            probe.proxy_url = getattr(self, "proxy_url", None)
             diagnostics = probe.probe(list(requested))
             self._check_shutdown()
             try:
@@ -378,6 +379,10 @@ class GowitnessCapture:
                        "--write-jsonl", "--write-jsonl-file", str(metadata),
                        "--threads", str(self.threads), "--chrome-path", self.chrome_path, "--driver", self.driver,
                        "--log-scan-errors", "--skip-html", "--skip-network-logs"]
+            if getattr(self, "proxy_url", None):
+                command.extend(["--chrome-proxy", self.proxy_url])
+                from .proxy import browser_command
+                command[command.index("--chrome-path") + 1] = browser_command(self.chrome_path, workdir)
             issue = None
             for row in requested.values():
                 row["capture_queued"] = True
@@ -387,6 +392,7 @@ class GowitnessCapture:
                 with (workdir / "gowitness.log").open("x", encoding="utf-8") as log:
                     outcome = _run_command(command, cancel_event=self.cancel_event, timeout=self.timeout,
                                            stdout=log, stderr=subprocess.STDOUT, shell=False, cwd=workdir,
+                                           env=getattr(self, "proxy_environment", None),
                                            **({"on_tick": monitor.poll} if monitor is not None else {}))
                 if outcome.returncode:
                     issue = self.exit_issue(workdir, outcome.returncode)

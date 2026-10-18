@@ -43,7 +43,7 @@ class Amass:
                 result = _run_command([self.executable, "-version"],
                     stdout=output, stderr=subprocess.STDOUT,
                     timeout=min(10, self.timeout), cancel_event=getattr(self, "cancel_event", None),
-                    shell=False, text=True)
+                    shell=False, text=True, env=getattr(self, "proxy_environment", None))
             with log.open(encoding="utf-8", errors="replace") as output:
                 text = _ANSI.sub("", output.read(16 * 1024))
             versions = set(re.findall(r"\bv?(\d+\.\d+\.\d+)\b", text))
@@ -91,6 +91,11 @@ class Amass:
                         "detail": detail, "discovered": 0}
 
         self._check_cancel()
+        if getattr(self, "proxy_url", None):
+            return [], {"status": "skipped", "engine": self.name, "version": AMASS_VERSION,
+                        "discovered": 0, "detail": "Amass 4.2 is skipped while discovery proxying is enabled: "
+                        "its internal DNS/resolver traffic cannot be covered by the HTTP provider proxy. "
+                        "No direct Amass requests were started. Use combined discovery, Subfinder or Assetfinder for proxied enumeration."}
         if not self.executable:
             return unavailable(f"Amass {AMASS_VERSION} is not installed; retained seeds and candidates are still checked. No fallback engine was used.")
         try:
@@ -132,7 +137,7 @@ class Amass:
                 with stdout_path.open("x", encoding="utf-8") as stdout, stderr_path.open("x", encoding="utf-8") as stderr:
                     result = _run_command(command, stdout=stdout, stderr=stderr,
                         timeout=self.timeout, cancel_event=getattr(self, "cancel_event", None),
-                        shell=False, text=True, cwd=workdir)
+                        shell=False, text=True, cwd=workdir, env=getattr(self, "proxy_environment", None))
                 if result.returncode:
                     errors.append(f"{root}: exit {result.returncode}; see {stderr_path.name}")
                 elif not output.is_file():

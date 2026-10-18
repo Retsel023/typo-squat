@@ -92,6 +92,29 @@ Gowitness/Rod's extracted Leakless helper. If an older container logged
 Compose file. The unprivileged user, read-only image, dropped capabilities and
 `no-new-privileges` setting remain in place. See [mount options](https://docs.docker.com/engine/storage/tmpfs/#options-for---tmpfs).
 
+The client's **Proxy routes** panel has independent SOCKS5 switches for discovery,
+DNS lookups, and website checks + Gowitness. Enter a reachable
+`socks5h://host:port` or `socks5h://user:password@host:port` for each stage, then
+save. The same URL can be reused. Empty URL fields retain existing settings;
+credentials are not displayed in reports. All switches initially stay off and
+saving does not test/connect to the proxy. Scans queued afterward, including
+scheduled scans, keep a snapshot of these settings.
+
+DNS needs a SOCKS5 server supporting **UDP ASSOCIATE**; a typical SSH SOCKS tunnel
+is TCP-only. Website checks and Chromium use the same selected route. Discovery
+proxying uses Subfinder + Assetfinder and **skips Amass 4.2**, whose internal DNS
+traffic cannot be covered by the provider proxy. This limitation is shown next
+to the switch and in source health. DNS parking checks use the DNS proxy too.
+There is no automatic direct retry on proxy failure. A changed DNS proxy route
+starts a fresh DNS baseline on the first accepted informative scan while retaining
+old reports and inventory. IP rotation depends on your provider, and existing
+concurrency limits still apply. See [full proxy behavior](../monitor/README.md#per-stage-socks5-proxies).
+
+Rebuild/recreate after this update to install PySocks in the image. Keep your
+existing Compose port/resolver/environment settings; the proxy addresses themselves
+are configured in the UI. A proxy must be reachable from the container, so a
+`localhost` URL refers to that container rather than your host's local proxy.
+
 Choose **DNS concurrency** when creating a client, or save it on the client's page
 before starting a scan. Use 20 for up to 20 simultaneous DNS questions with MassDNS; the supported
 range is 1–128. A blank setting follows the server default of 24. This setting
