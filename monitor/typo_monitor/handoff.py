@@ -7,7 +7,7 @@ def review_selection(store, run_id, *, include_parked=False, include_reviewed=Fa
     """Return new/changed candidate pairs with distinct comparison histories.
 
     Each capture receives at most one exclusion, in this priority: original,
-    failed, unchanged, uncertain, parked, reviewed, duplicate. Parking uses the
+    title_filtered, failed, unchanged, uncertain, parked, reviewed, duplicate. Parking uses the
     project's current classification; capture history itself remains immutable.
     References are limited to one successfully captured source from this run.
     """
@@ -20,7 +20,7 @@ def review_selection(store, run_id, *, include_parked=False, include_reviewed=Fa
     captures = store.list_run_captures(run_id)
     originals = set(store.inventory(run["project_id"])["seeds"])
     by_key = {(capture["domain"], capture["scheme"]): capture for capture in captures}
-    excluded = dict.fromkeys(("original", "failed", "unchanged", "uncertain", "duplicate", "parked", "reviewed"), 0)
+    excluded = dict.fromkeys(("original", "title_filtered", "failed", "unchanged", "uncertain", "duplicate", "parked", "reviewed"), 0)
     states, previous_captures = {}, {}
 
     def state(domain):
@@ -64,6 +64,8 @@ def review_selection(store, run_id, *, include_parked=False, include_reviewed=Fa
         reason = None
         if domain in originals:
             reason = "original"
+        elif (capture.get("preflight") or {}).get("skip_reason") == "title_rule":
+            reason = "title_filtered"
         elif capture["status"] != "captured":
             reason = "failed"
         elif change == "unchanged":

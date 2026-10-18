@@ -39,6 +39,17 @@
       <button class="button secondary" type="submit"{% if demo %} disabled{% endif %}>Save proxy settings</button><p class="field-help">Changes apply to scans queued afterward, including scheduled scans. Saving these settings does not contact the proxy.</p>
     </form>
   </section>
+  <section class="panel title-filter-panel" id="capture-filter" aria-labelledby="capture-filter-title">
+    <div class="panel-heading"><div><h2 id="capture-filter-title">Screenshot title exclusions</h2><p>Check page titles before starting a browser for each HTTP/HTTPS endpoint.</p></div></div>
+    <form method="post" action="{{ url_for('update_capture_filter', project_id=project.id) }}" class="title-filter-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label class="checkbox-label"><input type="checkbox" name="enabled" value="1"{% if project.capture_filter.get('enabled') %} checked{% endif %}{% if demo %} disabled{% endif %}> Skip new screenshots when the page title contains a saved phrase</label>
+      <label for="title-filter-rules">Title phrases · one per line</label><textarea id="title-filter-rules" name="rules" rows="4" placeholder="GoDaddy&#10;A specific radio station name" maxlength="6100"{% if demo %} disabled{% endif %}>{{ project.capture_filter.get('rules', [])|join('\n') }}</textarea>
+      <p class="field-help">Up to 50 literal phrases, 120 characters each. Matching ignores case. Use specific names; broad phrases can hide sites you want to inspect.</p>
+      <p class="schedule-server-note">Matching sites stay in the DNS inventory with their title and exclusion reason, and their titles are checked again next run. Original-domain references bypass title exclusions. Missing, unreadable or incomplete titles and HTTP error responses remain eligible for screenshots. This filter is a capture preference, not a safety verdict.</p>
+      <button class="button secondary" type="submit"{% if demo %} disabled{% endif %}>Save title exclusions</button><p class="field-help">Off by default. Changes affect scans queued afterward, including scheduled scans. Turning this off restores captures and the header-only preflight.</p>
+    </form>
+  </section>
   <section class="panel schedule-panel" id="schedule" aria-labelledby="schedule-title">
     <div class="schedule-heading"><div><h2 id="schedule-title">Scan schedules</h2><p>Separate intervals for full enumeration and saved-inventory checks.{% if schedule.inherited and not demo %} Your previous server schedule applies until you save these settings.{% endif %}</p></div>{% if demo %}<span class="badge neutral">Demo · read only</span>{% elif not schedule.interval_hours %}<span class="badge neutral">Both off</span>{% endif %}</div>
     <form method="post" action="{{ url_for('update_schedule', project_id=project.id) }}" class="split-schedule-form">

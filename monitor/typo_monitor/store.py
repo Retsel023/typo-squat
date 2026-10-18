@@ -30,7 +30,7 @@ def _json(value) -> str:
 class Store:
     _RUN_SUMMARY_COLUMNS = ("id,project_id,status,started_at,finished_at,is_baseline,"
                             "'[]' AS events_json,counts_json,source_status_json,error,dns_workers,discovery_mode,report_deleted,"
-                            "proxy_status_json,dns_route_key")
+                            "proxy_status_json,dns_route_key,capture_filter_json")
     _STATE_QUERY = """SELECT d.*,
         EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id
             AND i.domain=d.domain AND i.kind='seed') AS is_seed,
@@ -149,6 +149,8 @@ class Store:
                 db.execute("ALTER TABLE projects ADD COLUMN proxy_settings_json TEXT NOT NULL DEFAULT '{}'")
             if "dns_route_key" not in columns:
                 db.execute("ALTER TABLE projects ADD COLUMN dns_route_key TEXT NOT NULL DEFAULT 'direct'")
+            if "capture_filter_json" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN capture_filter_json TEXT NOT NULL DEFAULT '{}'")
             run_columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)")}
             if "dns_workers" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN dns_workers INTEGER")
@@ -160,12 +162,16 @@ class Store:
                 db.execute("ALTER TABLE runs ADD COLUMN proxy_status_json TEXT NOT NULL DEFAULT '{}'")
             if "dns_route_key" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN dns_route_key TEXT NOT NULL DEFAULT 'direct'")
+            if "capture_filter_json" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN capture_filter_json TEXT NOT NULL DEFAULT '{}'")
             db.execute("""CREATE INDEX IF NOT EXISTS project_schedule_due ON projects(schedule_next_run_at)
                 WHERE schedule_interval_hours>0""")
             capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
             for column in ("visual_json", "analysis_json"):
                 if column not in capture_columns:
                     db.execute(f"ALTER TABLE captures ADD COLUMN {column} TEXT NOT NULL DEFAULT '{{}}'")
+            if "preflight_json" not in capture_columns:
+                db.execute("ALTER TABLE captures ADD COLUMN preflight_json TEXT NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def _connection(self, *, write=False):
@@ -193,6 +199,7 @@ class Store:
         # template, API response or export is allowed to receive those URLs.
         result.pop("proxy_settings_json", None)
         result.pop("dns_route_key", None)
+        result["capture_filter"] = json.loads(result.pop("capture_filter_json", "{}"))
         result["roots"] = json.loads(result.pop("roots_json"))
         scope_json = result.pop("comparison_scope_json")
         result["comparison_scope"] = json.loads(scope_json) if scope_json is not None else None
@@ -217,6 +224,7 @@ class Store:
         result["is_baseline"] = bool(result["is_baseline"])
         result["report_deleted"] = bool(result.get("report_deleted", False))
         result["proxy_status"] = json.loads(result.pop("proxy_status_json", "{}"))
+        result["capture_filter"] = json.loads(result.pop("capture_filter_json", "{}"))
         result.pop("dns_route_key", None)
         return result
 
@@ -281,6 +289,7 @@ class Store:
         capture.pop("status_rank", None)
         capture["visual"] = json.loads(capture.pop("visual_json", "{}"))
         capture["analysis"] = json.loads(capture.pop("analysis_json", "{}"))
+        capture["preflight"] = json.loads(capture.pop("preflight_json", "{}"))
         return capture
 
     @staticmethod
@@ -336,6 +345,9 @@ class Store:
                 visual = attempt.get("visual", {})
                 if not isinstance(visual, dict) or len(_json(visual)) > 16384:
                     raise ValueError("Invalid screenshot comparison metadata.")
+                preflight = attempt.get("preflight", {})
+                if not isinstance(preflight, dict) or len(_json(preflight)) > 16384:
+                    raise ValueError("Invalid website preflight metadata.")
                 try:
                     captured_at = datetime.fromisoformat(timestamp)
                     if captured_at.tzinfo is None or captured_at.utcoffset() != timedelta(0):
@@ -345,7 +357,7 @@ class Store:
                 normalized[domain].append({"scheme": scheme, "status": status, "relative_path": relative_path,
                     "url": url, "title": title, "http_status": http_status, "error": error,
                     "captured_at": captured_at.astimezone(timezone.utc).isoformat(timespec="microseconds"),
-                    "visual": visual})
+                    "visual": visual, "preflight": preflight})
         return normalized
 
     @staticmethod
@@ -421,6 +433,14 @@ class Store:
                 settings[stage] = {"enabled": enabled, "url": value}
             db.execute("UPDATE projects SET proxy_settings_json=? WHERE id=?", (_json(settings), project_id))
             return public_settings(settings)
+
+    def set_capture_filter(self, project_id, *, enabled, rules):
+        from .title_filter import normalize_policy
+        policy = normalize_policy(enabled, rules)
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            db.execute("UPDATE projects SET capture_filter_json=? WHERE id=?", (_json(policy), project_id))
+        return policy
 
     @staticmethod
     def _require_idle(db, project_id):
@@ -655,9 +675,9 @@ class Store:
             if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
                 raise RuntimeError("A scan is already running for this project.")
             run_id = str(uuid4())
-            db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key)
-                VALUES(?,?, 'running', ?,?,?,?,?)""",
-                       (run_id, project_id, _now(), workers, mode, _json(proxy_status or {}), dns_route_key))
+            db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key,capture_filter_json)
+                VALUES(?,?, 'running', ?,?,?,?,?,?)""",
+                       (run_id, project_id, _now(), workers, mode, _json(proxy_status or {}), dns_route_key, project["capture_filter_json"]))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     @staticmethod
@@ -822,11 +842,12 @@ class Store:
             if screenshots is not None:
                 attempts = [(domain, attempt) for domain, entries in normalized_screenshots.items() for attempt in entries]
                 db.executemany("""INSERT INTO captures(run_id,project_id,domain,scheme,status,relative_path,
-                    url,title,http_status,error,captured_at,visual_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    url,title,http_status,error,captured_at,visual_json,preflight_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     [(run_id, project_id, domain, attempt["scheme"], attempt["status"], attempt["relative_path"],
-                      attempt["url"], attempt["title"], attempt["http_status"], attempt["error"], attempt["captured_at"], _json(attempt["visual"]))
+                      attempt["url"], attempt["title"], attempt["http_status"], attempt["error"], attempt["captured_at"], _json(attempt["visual"]), _json(attempt["preflight"]))
                      for domain, attempt in attempts])
                 counts["screenshots_total"] = len(attempts)
+                counts["screenshots_title_filtered"] = sum(attempt["preflight"].get("skip_reason") == "title_rule" for _, attempt in attempts)
                 for capture_status in ("captured", "failed", "unavailable", "skipped"):
                     counts["screenshots_" + capture_status] = sum(attempt["status"] == capture_status for _, attempt in attempts)
                 for image_change in ("first_capture", "changed", "unchanged", "uncertain"):

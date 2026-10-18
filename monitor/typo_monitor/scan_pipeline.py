@@ -128,7 +128,7 @@ class CaptureOverlap:
             elif stage == "screenshots":
                 if "reported" in values:
                     self.metrics["captures_reported"] = values["reported"]
-                for key in ("eligible", "launched", "skipped"):
+                for key in ("eligible", "launched", "skipped", "title_filtered", "titles_found"):
                     if key in values:
                         self.metrics[key] = values[key]
             self.report("pipeline", f"{stage}: {message}" if message else None,
@@ -179,7 +179,10 @@ class CaptureOverlap:
                      failed=sum(row["status"] == "failed" for row in rows),
                      unavailable=sum(row["status"] == "unavailable" for row in rows),
                      skipped=sum(row["status"] == "skipped" for row in rows),
-                     eligible=sum(row.get("preflight", {}).get("status") == "http_response" for row in rows),
+                     eligible=sum(row.get("preflight", {}).get("status") == "http_response"
+                                  and row.get("preflight", {}).get("skip_reason") != "title_rule" for row in rows),
+                     title_filtered=sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows),
+                     titles_found=sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),
                      launched=sum(bool(row.get("capture_queued")) for row in rows))
         for status in ("http_response", "no_http_response", "unknown"):
             stage["preflight_" + status] = sum(row.get("preflight", {}).get("status") == status for row in rows)

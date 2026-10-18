@@ -112,6 +112,8 @@ def _capture_status(attempt):
     if not attempt:
         return "No screenshot"
     error = str(attempt.get("error") or "").strip().lower()
+    if error.startswith("screenshot excluded by title rule:"):
+        return "Excluded by title rule"
     timed_out = "timed out" in error or "timeout" in error or "deadline" in error
     if error.startswith("website check"):
         return "Website check timed out" if timed_out else "Website check uncertain"
@@ -566,6 +568,19 @@ def create_app(service):
         flash("Proxy settings saved for future scans. Queued and running scans keep their original routes.", "success")
         return redirect(url_for("project_detail", project_id=project_id, _anchor="proxy-settings"), code=303)
 
+    @app.post("/projects/<uuid:project_id>/capture-filter")
+    def update_capture_filter(project_id):
+        project = project_or_404(project_id)
+        if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
+            abort(409, description="Create a real project to configure capture filters.")
+        try:
+            service.set_capture_filter(str(project_id), enabled=request.form.get("enabled") == "1",
+                rules=[line.strip() for line in request.form.get("rules", "").splitlines() if line.strip()])
+        except ValueError as error:
+            abort(400, description=str(error))
+        flash("Title exclusions saved for future scans. Domains will still be checked on every run.", "success")
+        return redirect(url_for("project_detail", project_id=project_id, _anchor="capture-filter"), code=303)
+
     def finish_deletion(pending):
         if pending:
             flash("Some deleted files could not be removed yet. Cleanup is saved for retry on server restart; see server logs.", "info")
@@ -648,6 +663,7 @@ def create_app(service):
                                progress=progress, outputs=outputs, progress_stages=PROGRESS_STAGES,
                                demo="demo" in run.get("source_status", {}), handoff=handoff,
                                handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
+                                               "title_filtered": "Excluded by title rule",
                                                "unchanged": "Unchanged images", "uncertain": "Uncertain comparisons",
                                                "duplicate": "Duplicate protocol pairs", "parked": "Likely parked",
                                                "reviewed": "Already reviewed"})

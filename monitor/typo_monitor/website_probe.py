@@ -1,4 +1,4 @@
-"""Bounded, header-only HTTP preflight; transport errors are not DNS facts."""
+"""HTTP preflight with optional bounded titles; transport errors are not DNS facts."""
 
 from contextlib import closing
 from datetime import datetime, timezone
@@ -64,6 +64,9 @@ class WebsiteProbe:
             if proxy_url:
                 session.proxies = {"http": proxy_url, "https": proxy_url}
             session.headers["User-Agent"] = "TypoMonitor-WebsitePreflight/1"
+            collect_titles = bool(getattr(self, "collect_titles", False))
+            if collect_titles:
+                session.headers["Accept-Encoding"] = "identity"
             # Requests otherwise consumes redirect bodies while preparing
             # Response.next, even with allow_redirects=False and stream=True.
             session.resolve_redirects = lambda *args, **kwargs: iter(())
@@ -80,7 +83,11 @@ class WebsiteProbe:
                         if not isinstance(code, int) or isinstance(code, bool) or not 100 <= code <= 599:
                             return result("unknown", "Website check uncertain: invalid response status.")
                         tls_verified = verify if url.startswith("https:") else None
-                        return result("http_response", code=code)
+                        diagnostic = result("http_response", code=code)
+                        if collect_titles:
+                            from .title_filter import inspect_title
+                            diagnostic.update(inspect_title(response, session, deadline, self._check_cancel))
+                        return diagnostic
                 except requests.exceptions.SSLError as error:
                     tls_error = f"TLS verification/handshake failed: {type(error).__name__}."
                     if verify:

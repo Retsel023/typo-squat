@@ -292,6 +292,10 @@ class MonitorService:
         with self._mutex:
             return self.store.set_proxy_settings(project_id, changes)
 
+    def set_capture_filter(self, project_id, *, enabled, rules):
+        with self._mutex:
+            return self.store.set_capture_filter(project_id, enabled=enabled, rules=rules)
+
     def _report_progress(self, run_id, stage, message=None, **values):
         reporter = self._progress.get(run_id)
         if reporter is None:
@@ -404,6 +408,7 @@ class MonitorService:
             self.parking_classifier.workers = workers
         if self.capturer is not None:
             self.capturer.probe_workers = workers
+            self.capturer.title_filter = run.get("capture_filter", {})
         from .proxy import direct_environment
         for adapter in (self.resolver, self.generator, self.discoverer, self.parking_classifier, self.capturer):
             if adapter is not None:
@@ -473,6 +478,8 @@ class MonitorService:
                        metrics={"accepted_hostnames": len(discovered), "rejected_invalid_names": invalid_names,
                                 "rejected_out_of_scope": outside_scope})
             seeds = sorted(set(project["roots"]) | set(old["seeds"]) | set(discovered))
+            if self.capturer is not None:
+                self.capturer.original_domains = set(seeds)
             self._check_shutdown()
             # Generation is deterministic per seed/profile. The candidate and
             # source inventory is already durable; only ungenerated seeds need

@@ -13,6 +13,7 @@ import subprocess
 from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
 from .website_probe import WebsiteProbe
+from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, matching_rule
 
 
 SUPPORTED_VERSION = "3.2.2"
@@ -69,7 +70,39 @@ def _validated_preflight(diagnostics, requested):
                           "error": error, "tls_error": entry.get("tls_error"),
                           "tls_verified": entry.get("tls_verified"),
                           "checked_at": checked.astimezone(timezone.utc).isoformat()}
+        title = entry.get("title")
+        title_status = entry.get("title_status", "disabled")
+        title_url = entry.get("title_url")
+        title_code, title_bytes = entry.get("title_http_status"), entry.get("title_bytes", 0)
+        if (title is not None and (not isinstance(title, str) or len(title) > MAX_TITLE_CHARS)
+                or not isinstance(title_status, str) or title_status not in TITLE_STATUSES
+                or title_status == "found" and not title
+                or title_url is not None and (not isinstance(title_url, str) or len(title_url) > 2048)
+                or title_code is not None and (type(title_code) is not int or not 100 <= title_code <= 599)
+                or type(title_bytes) is not int or not 0 <= title_bytes <= 64 * 1024):
+            raise ValueError("Website preflight returned invalid title metadata.")
+        validated[url].update(title=title, title_status=title_status, title_url=title_url,
+                              title_http_status=title_code, title_bytes=title_bytes)
     return validated
+
+
+def _apply_preflight(capture, row, diagnostic, domain):
+    """Return whether a responsive endpoint should enter the browser queue."""
+    row.update(preflight=diagnostic, title=diagnostic.get("title"), http_status=diagnostic.get("http_status"))
+    if diagnostic["status"] != "http_response":
+        prefix = "Website check uncertain: " if diagnostic["status"] == "unknown" else "No HTTP response: "
+        error = diagnostic["error"]
+        row.update(status="skipped", error=error if error.startswith(prefix) else prefix + error,
+                   captured_at=diagnostic["checked_at"])
+        return False
+    rule = matching_rule(diagnostic, getattr(capture, "title_filter", {}),
+                         original=domain in getattr(capture, "original_domains", set()))
+    if rule:
+        diagnostic.update(skip_reason="title_rule", matched_rule=rule)
+        row.update(status="skipped", error=f"Screenshot excluded by title rule: {rule}",
+                   captured_at=diagnostic["checked_at"])
+        return False
+    return True
 
 
 def _image_path(workdir, filename):
@@ -283,12 +316,18 @@ class GowitnessCapture:
         unsuccessful = any(row["status"] in {"failed", "unavailable"} for row in rows)
         counts = {status: sum(row.get("preflight", {}).get("status") == status for row in rows)
                   for status in ("http_response", "no_http_response", "unknown")}
+        title_filtered = sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows)
+        if title_filtered:
+            detail += f" {title_filtered} endpoints excluded by configured title phrases; DNS inventory was retained."
         return {"status": "failed" if failed else "partial" if issue or unsuccessful or counts["unknown"] else "ok",
                 "detail": detail, "version": version, "required_version": SUPPORTED_VERSION,
                 "attempts": len(rows), "captured": captured,
                 "failed": sum(row["status"] == "failed" for row in rows),
                 "unavailable": sum(row["status"] == "unavailable" for row in rows),
-                "eligible": counts["http_response"], "launched": sum(row.get("capture_queued", False) for row in rows),
+                "eligible": counts["http_response"] - title_filtered,
+                "title_filtered": title_filtered,
+                "titles_found": sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),
+                "launched": sum(row.get("capture_queued", False) for row in rows),
                 "skipped": sum(row["status"] == "skipped" for row in rows),
                 **{"preflight_" + status: count for status, count in counts.items()}}
 
@@ -329,6 +368,7 @@ class GowitnessCapture:
             probe.run_id = getattr(self, "run_id", "manual")
             probe.progress_callback = callback
             probe.proxy_url = getattr(self, "proxy_url", None)
+            probe.collect_titles = bool(getattr(self, "title_filter", {}).get("enabled"))
             diagnostics = probe.probe(list(requested))
             self._check_shutdown()
             try:
@@ -337,23 +377,19 @@ class GowitnessCapture:
                 with preflight_file.open("x", encoding="utf-8") as stream:
                     json.dump({"error": str(error), "checked_at": _now()}, stream, indent=2)
                 raise
-            with preflight_file.open("x", encoding="utf-8") as stream:
-                json.dump(diagnostics, stream, indent=2)
             for url, diagnostic in diagnostics.items():
                 row = requested[url]
-                row["preflight"] = diagnostic
-                if diagnostic["status"] != "http_response":
-                    prefix = "Website check uncertain: " if diagnostic["status"] == "unknown" else "No HTTP response: "
-                    error = diagnostic["error"]
-                    if not error.startswith(prefix):
-                        error = prefix + error
-                    row.update(status="skipped", error=error, captured_at=diagnostic["checked_at"])
-            requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"}
+                _apply_preflight(self, row, diagnostic, url.split("://", 1)[1].rsplit(":", 1)[0])
+            with preflight_file.open("x", encoding="utf-8") as stream:
+                json.dump(diagnostics, stream, indent=2)
+            requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"
+                         and row["preflight"].get("skip_reason") != "title_rule"}
             progress_metrics = {"eligible": len(requested), "launched": 0,
+                                "title_filtered": sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for rows in results.values() for row in rows),
                                 "skipped": sum(row["status"] == "skipped" for rows in results.values() for row in rows)}
             _report_progress(callback, "screenshots", current=0, total=len(requested), metrics=progress_metrics)
             if not requested:
-                return results, self._stage(results, "No HTTP response endpoints qualified for browser capture; see preflight.json. Uncertain checks are retried on the next run.")
+                return results, self._stage(results, "No endpoints qualified for browser capture after website and title checks; see preflight.json. All names are checked again next run.")
             if not self.executable:
                 return unavailable("Gowitness is unavailable; install the pinned 3.2.2 binary.")
             if not self.chrome_path or not shutil.which(self.chrome_path):

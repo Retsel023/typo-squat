@@ -156,6 +156,33 @@ saved in `preflight.json` and refreshed on every run. Domains without a respondi
 website remain in DNS inventory, with compact status rows instead of empty
 screenshot frames. An older saved screenshot is explicitly labelled as previous.
 
+The project's **Screenshot title exclusions** panel can reduce browser work.
+It is off by default. Enable it and save specific, case-insensitive literal
+phrases such as `GoDaddy` or a particular station name (one per line, up to 50
+phrases of 120 characters). With it enabled, the existing GET preflight reads
+at most 64 KiB of uncompressed HTML, stopping after the title or head. It follows
+at most three HTTP redirects within the probe's timeout budget and uses the
+same configured website proxy. This adds a bounded body read and possibly
+redirect requests; it does not launch curl or another browser.
+
+Only a complete title from a final 2xx response can exclude that protocol's new
+screenshot. Missing, incomplete, encoded or unreadable titles, HTTP error
+responses and title-read failures keep the endpoint eligible. JavaScript-only
+titles require the browser and cannot be used for this prefilter. Owned roots
+and discovered source subdomains bypass title exclusions so reference captures
+remain available. HTTP and HTTPS are evaluated independently.
+
+An excluded endpoint retains its DNS records, title, matched phrase and check
+details in `preflight.json`, saved capture metadata and reports. The run counts
+title exclusions separately, including in the AI handoff preview; excluded
+captures send no image to n8n. Existing historical screenshots are retained.
+Every later scan checks the title again, so this is not a permanent domain
+blacklist. Rules are a capture preference, not a benign-site classification:
+a malicious site can copy any title. Keep rules specific or leave the filter
+off when you need complete visual evidence. Settings are snapshotted when a run
+is queued and apply to both manual and scheduled scans. Disabling the filter
+restores the header-only preflight.
+
 With MassDNS, a domain enters this pipeline only after all its A, AAAA and
 CNAME questions have completed and its positive result is validated. A bounded
 queue offers names to concurrent HTTP/HTTPS checks while MassDNS keeps running;

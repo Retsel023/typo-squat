@@ -16,7 +16,7 @@ from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
 from .screenshots import (
     SUPPORTED_VERSION, _JsonlProgress, _row, _validated_preflight,
-    _validate_metadata,
+    _validate_metadata, _apply_preflight,
 )
 from .website_probe import WebsiteProbe
 
@@ -174,6 +174,7 @@ def capture_stream(capture, domains_iterator, workdir):
     counts = dict.fromkeys(("http_response", "no_http_response", "unknown"), 0)
     last_poll = 0
     launched = 0
+    title_filtered = 0
 
     def poll():
         nonlocal last_poll, issue
@@ -181,8 +182,8 @@ def capture_stream(capture, domains_iterator, workdir):
         if process is not None and process.poll() is not None and issue is None:
             issue = f"Gowitness exited before its input closed (status {process.returncode}); see gowitness.log."
         if monitor is not None and time.monotonic() - last_poll >= 1:
-            monitor.metrics.update(eligible=len(requested), launched=launched, skipped=sum(counts[key]
-                                   for key in ("no_http_response", "unknown")), input_open=True)
+            monitor.metrics.update(eligible=len(requested), launched=launched, title_filtered=title_filtered,
+                                   skipped=title_filtered + sum(counts[key] for key in ("no_http_response", "unknown")), input_open=True)
             monitor.poll()
             last_poll = time.monotonic()
 
@@ -277,6 +278,7 @@ def capture_stream(capture, domains_iterator, workdir):
         probe.cancel_event = _CombinedSignal(capture.cancel_event, stopped)
         probe.run_id = getattr(capture, "run_id", "manual")
         probe.proxy_url = getattr(capture, "proxy_url", None)
+        probe.collect_titles = bool(getattr(capture, "title_filter", {}).get("enabled"))
         feed = _PreflightFeed(capture, domains_iterator, probe, stopped)
         events = feed.events()
         for kind, value in events:
@@ -294,16 +296,16 @@ def capture_stream(capture, domains_iterator, workdir):
             domain = url.split("://", 1)[1].rsplit(":", 1)[0]
             scheme = url.split(":", 1)[0]
             row = next(row for row in results[domain] if row["scheme"] == scheme)
-            row["preflight"] = diagnostic
+            eligible = _apply_preflight(capture, row, diagnostic, domain)
+            title_filtered += diagnostic.get("skip_reason") == "title_rule"
             _report_progress(callback, "websites", current=len(diagnostics), total=len(results) * 2,
                              metrics={"response": counts["http_response"],
                                       "no_response": counts["no_http_response"],
                                       "uncertain": counts["unknown"], "input_open": True})
-            if diagnostic["status"] != "http_response":
-                prefix = "Website check uncertain: " if diagnostic["status"] == "unknown" else "No HTTP response: "
-                error = diagnostic["error"]
-                row.update(status="skipped", error=error if error.startswith(prefix) else prefix + error,
-                           captured_at=diagnostic["checked_at"])
+            if not eligible:
+                _report_progress(callback, "screenshots", metrics={"eligible": len(requested), "launched": launched,
+                    "title_filtered": title_filtered,
+                    "skipped": title_filtered + counts["no_http_response"] + counts["unknown"]})
                 continue
             requested[url] = row
             if process is None and issue is None:
@@ -356,12 +358,12 @@ def capture_stream(capture, domains_iterator, workdir):
             detail += " " + issue
         if malformed or foreign or duplicates:
             detail += f" Ignored metadata: {malformed} malformed, {foreign} unrequested, {len(duplicates)} duplicate URLs."
+        if results and not requested:
+            detail = "No endpoints qualified for browser capture after website and title checks; see preflight.json. All names are checked again next run."
         stage = capture._stage(results, detail, issue=bool(issue or malformed or foreign or duplicates),
                                version=detected_version)
         if not results:
             stage.update(status="skipped", detail="No currently resolving candidates to capture.")
-        elif not requested:
-            stage["detail"] = "No HTTP response endpoints qualified for browser capture; see preflight.json. Uncertain checks are retried on the next run."
         _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
         return results, stage
     except (OSError, ValueError) as error:
