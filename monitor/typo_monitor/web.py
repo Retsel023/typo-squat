@@ -687,9 +687,11 @@ def create_app(service):
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
         progress, outputs = live_data(run_id)
-        from .capture_changes import report_entries
+        from .capture_changes import report_entries, website_check_diagnostics
         report_mode = run.get("capture_policy", {}).get("mode", "full")
-        website_entries = report_entries(service.store.list_run_captures(str(run_id)), report_mode)
+        captures = service.store.list_run_captures(str(run_id))
+        website_entries = report_entries(captures, report_mode)
+        web_diagnostics = website_check_diagnostics(captures)
         page_text = request.args.get("web_page", "1")
         if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8 or int(page_text) < 1:
             abort(400, description="Choose a valid website report page.")
@@ -702,6 +704,7 @@ def create_app(service):
                                progress=progress, outputs=outputs, progress_stages=PROGRESS_STAGES,
                                demo="demo" in run.get("source_status", {}), handoff=handoff,
                                website_entries=website_entries, report_mode=report_mode,
+                               web_diagnostics=web_diagnostics,
                                web_page=web_page, web_pages=web_pages, web_total=web_total,
                                handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
                                                "title_filtered": "Excluded by title rule",

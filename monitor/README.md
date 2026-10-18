@@ -246,6 +246,13 @@ expandable text diffs and this run's screenshots. It does not repeat old images.
 The inventory and older reports retain the complete history. DNS changes remain
 separate; changes do not prove a purchase or maliciousness.
 
+Connection/TLS checks without an HTTP response already skip Gowitness. Both
+report modes keep these records out of website review cards and summarize them
+in collapsed **Website-check diagnostics**, with counts and up to 20 links to
+candidate history. The complete diagnostics remain saved; endpoints are checked
+again on future scans. This changes report presentation, not DNS state or the
+browser eligibility of responding pages with incomplete text.
+
 **Full capture / report** captures all eligible endpoints, respecting title
 exclusions. The default periodic recapture age is 30 days (0 disables, up to 365).
 Static text cannot reveal purely visual or JavaScript-only changes, so full or

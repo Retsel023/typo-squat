@@ -188,10 +188,32 @@ CAPTURE_REASONS = {
 }
 
 
+def website_check_diagnostics(captures):
+    """Summarize skipped transport checks separately from website review cards."""
+    counts = {"no_http_response": 0, "unknown": 0}
+    samples = []
+    for capture in captures:
+        probe = capture.get("preflight", {})
+        status = probe.get("status")
+        if status not in counts:
+            continue
+        counts[status] += 1
+        if len(samples) < 20:
+            samples.append({"domain": capture["domain"], "scheme": capture["scheme"],
+                            "status": status, "error": probe.get("error") or capture.get("error"),
+                            "became_unavailable": probe.get("web_change") == "became_unavailable"})
+    return {"counts": counts, "total": sum(counts.values()), "samples": samples}
+
+
 def report_entries(captures, mode="changes"):
     entries = []
     for capture in captures:
         probe = capture.get("preflight", {})
+        # Transport failures are diagnostic records, not website review entries.
+        # Preserve older successful captures that predate preflight metadata.
+        if probe.get("status") != "http_response" and not (
+                not probe.get("status") and capture.get("status") == "captured" and capture.get("relative_path")):
+            continue
         if probe.get("skip_reason") == "title_rule" or probe.get("report_exclusion") == "browser_title_rule":
             continue
         if mode == "changes" and probe.get("skip_reason") in {"unchanged_title", "unchanged_content"}:

@@ -29,6 +29,16 @@ form/link and endpoint observations only. A periodic screenshot of unchanged
 content does not enter a change-only report; it remains in inventory/history for
 manual review. Full reports retain all eligible current-run captures.
 
+Failed connection/TLS preflight checks never enter Gowitness. They are omitted
+from website review cards in both report modes and summarized in a collapsed
+**Website-check diagnostics** section instead, with separate no-response and
+uncertain counts and up to 20 candidate-history links. Saved diagnostics remain
+available in candidate history and the run's `preflight.json`. A previously
+responding endpoint that stops responding is marked in those diagnostics.
+DNS inventory is unaffected, and future scans check these endpoints again.
+An HTTP response with incomplete text can still reach Gowitness; that differs
+from a TLS/connection check that produced no HTTP response at all.
+
 HTTP/HTTPS screenshots are displayed independently. Candidate detail pages can
 show earlier/current screenshots side by side, selected from saved history
 without decoding or comparing their pixels. Historical visual-comparison metadata
