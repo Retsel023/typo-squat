@@ -126,7 +126,8 @@ def _apply_preflight(capture, row, diagnostic, domain):
                          original=domain in getattr(capture, "original_domains", set()))
     if rule:
         scope = rule_scope(rule, getattr(capture, "title_filter", {}))
-        diagnostic.update(skip_reason="title_rule", matched_rule=rule, rule_scope=scope)
+        diagnostic.update(skip_reason="title_rule", matched_rule=rule, rule_scope=scope,
+                          capture_decision="skip", capture_reason="title_rule")
         row.update(status="skipped", error=f"Screenshot excluded by title rule: {rule} ({scope})",
                    captured_at=diagnostic["checked_at"])
         return False

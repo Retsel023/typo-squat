@@ -41,7 +41,7 @@ PROGRESS_STAGES = {
     "generation": "Generating typo candidates", "dns": "Checking DNS",
     "pipeline": "Checking DNS and capturing websites",
     "parking": "Checking parking signals", "websites": "Checking website responses",
-    "screenshots": "Capturing websites", "comparison": "Comparing images",
+    "screenshots": "Capturing websites",
     "publishing": "Saving results", "completed": "Completed",
     "partial": "Completed with gaps", "cancelled": "Stopped", "failed": "Failed",
 }
@@ -135,22 +135,7 @@ def _prepare_domain(domain):
                 if isinstance(item, dict) and item.get("scheme") in {"http", "https"}}
     image_schemes = [scheme for scheme in ("http", "https") if _saved_capture(attempts.get(scheme))]
     result.update(image_schemes=image_schemes, gallery_schemes=list(image_schemes),
-                  unavailable_schemes=[scheme for scheme in ("http", "https") if scheme not in image_schemes],
-                  protocol_relation=None)
-    http, https = attempts.get("http"), attempts.get("https")
-    if (len(image_schemes) != 2 or not http or not https or http.get("status") != "captured" or https.get("status") != "captured"
-            or not http.get("run_id") or http.get("run_id") != https.get("run_id")):
-        return result
-    for scheme, capture in (("http", http), ("https", https)):
-        visual = capture.get("visual") or {}
-        other = "https" if scheme == "http" else "http"
-        if visual.get("duplicate_of") != other:
-            continue
-        if visual.get("duplicate_kind") == "exact":
-            result.update(gallery_schemes=[other], protocol_relation="exact")
-            return result
-        if visual.get("duplicate_kind") == "similar":
-            result["protocol_relation"] = "similar"
+                  unavailable_schemes=[scheme for scheme in ("http", "https") if scheme not in image_schemes])
     return result
 
 
@@ -411,22 +396,11 @@ def create_app(service):
             if isinstance(analysis, dict) and analysis:
                 assessments.append({"scheme": capture.get("scheme", ""), "analysis": analysis,
                                     "captured_at": capture.get("captured_at")})
-            visual = capture.get("visual") or {}
-            previous_run = visual.get("previous_run_id")
-            if not _has_capture_image(capture) or not previous_run or capture.get("scheme") not in {"http", "https"}:
+            if not _has_capture_image(capture):
                 continue
-            try:
-                previous_run = str(UUID(previous_run))
-            except (ValueError, TypeError, AttributeError):
-                continue
-            if previous_run == capture.get("run_id"):
-                continue
-            previous = service.store.get_capture(previous_run, domain, capture["scheme"])
-            if (_has_capture_image(previous) and previous.get("domain") == domain
-                    and previous.get("project_id") == str(project_id) and previous.get("scheme") == capture["scheme"]
-                    and previous.get("run_id") == previous_run):
-                comparisons.append({"scheme": capture["scheme"], "before": previous, "after": capture,
-                                    "change": visual.get("change", "uncertain"), "distance": visual.get("distance")})
+            previous = service.store.previous_successful_capture(capture["run_id"], domain, capture["scheme"])
+            if _has_capture_image(previous):
+                comparisons.append({"scheme": capture["scheme"], "before": previous, "after": capture})
         return render_template("candidate.html", project=project, candidate=candidate,
                                captures=service.store.list_captures(str(project_id), domain, limit=20),
                                references=references, comparisons=comparisons, assessments=assessments,

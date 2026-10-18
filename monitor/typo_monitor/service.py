@@ -627,7 +627,7 @@ class MonitorService:
             if getattr(self.resolver, "version", None):
                 source_status["dns"]["version"] = self.resolver.version
             if source_status["dns"]["status"] == "failed":
-                for stage in ("parking", "screenshots", "visual_comparison"):
+                for stage in ("parking", "screenshots"):
                     source_status[stage] = {"status": "skipped",
                         "detail": "DNS processing failed without a trustworthy complete domain result; this stage was not accepted."}
                 raise RuntimeError(dns_error or "DNS processing failed; saved inventory and baseline were preserved.")
@@ -665,15 +665,6 @@ class MonitorService:
                         "error": f"Capture stage failed: {type(exc).__name__}", "captured_at": now}
                         for scheme in ("http", "https")] for domain in resolving}
                 self._check_shutdown()
-                from .visuals import annotate_captures
-                LOG.info("Run %s: local image comparison starting", run_id)
-                report("comparison", "Comparing saved images with previous captures.")
-                screenshots = annotate_captures(screenshots, workdir=workdir, data_dir=self.data_dir,
-                    previous=lambda domain, scheme: self.store.latest_successful_capture(project_id, domain, scheme),
-                    cancel_event=signal, progress_callback=report)
-                source_status["visual_comparison"] = {"status": "ok", "detail": "Decoded pixel changes and HTTP/HTTPS similarity; local comparison, no AI requests.",
-                    "changed": sum(row.get("visual", {}).get("change") == "changed" for rows in screenshots.values() for row in rows),
-                    "duplicates": sum(bool(row.get("visual", {}).get("duplicate_of")) for rows in screenshots.values() for row in rows)}
                 (workdir / "captures.json").write_text(json.dumps(screenshots, indent=2), encoding="utf-8")
             else:
                 source_status["screenshots"] = {"status": "skipped", "detail": "Capture explicitly disabled or supplied test resolver has no capture adapter."}

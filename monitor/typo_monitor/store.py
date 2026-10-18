@@ -1068,6 +1068,19 @@ class Store:
                 AND scheme=? AND status='captured' ORDER BY captured_at DESC,rowid DESC LIMIT 1""",
                 (project_id, domain, scheme)).fetchone())
 
+    def previous_successful_capture(self, run_id, domain, scheme):
+        """Metadata for manual before/after viewing; no image comparison."""
+        domain = normalize_domain(domain)
+        if scheme not in ("http", "https"):
+            return None
+        with self._connection() as db:
+            return self._capture(db.execute("""SELECT older.* FROM captures newer
+                JOIN captures older ON older.project_id=newer.project_id
+                    AND older.domain=newer.domain AND older.scheme=newer.scheme
+                WHERE newer.run_id=? AND newer.domain=? AND newer.scheme=?
+                    AND older.status='captured' AND older.rowid<newer.rowid
+                ORDER BY older.rowid DESC LIMIT 1""", (run_id, domain, scheme)).fetchone())
+
     def save_capture_review(self, run_id, domain, scheme, review, *, text_only=False):
         if not isinstance(review, dict):
             raise ValueError("AI assessment must be a JSON object.")

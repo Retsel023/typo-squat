@@ -14,7 +14,20 @@ Each attempt receives `captured`, `failed`, `unavailable`, or `skipped` status, 
 
 The default browser driver is `gorod`; `--capture-driver chromedp` remains an alternative. The pinned Gowitness binary and the default driver successfully captured three local fixture pages with the installed Chrome browser. Tests did not visit external domains. The offline demo uses those labeled fixture images.
 
-Local pixel comparison records first/changed/unchanged/uncertain captures and preserves independent HTTP/HTTPS histories. Exact protocol duplicates collapse in the gallery while both original assets remain available. The optional cloud handoff is text-only: complete new/changed text, compact diffs and a bounded owned reference. Screenshots and image URLs are never sent to AI. Use the [standalone runner](../standalone/README.md) and its local HTML/JSON report to inspect the volume before enabling n8n.
+Automatic pixel/perceptual image comparison and changed/unchanged/similar image
+badges have been removed. The website changelog uses static text, title,
+form/link and endpoint observations only. A periodic screenshot of unchanged
+content does not enter a change-only report; it remains in inventory/history for
+manual review. Full reports retain all eligible current-run captures.
+
+HTTP/HTTPS screenshots are displayed independently. Candidate detail pages can
+show earlier/current screenshots side by side, selected from saved history
+without decoding or comparing their pixels. Historical visual-comparison metadata
+is retained on disk but does not drive report selection or gallery labels.
+The optional AI handoff is text-only and deduplicates equivalent same-host
+protocol text histories. No image bytes or image URLs enter AI review.
+Use the [standalone runner](../standalone/README.md) and its local HTML/JSON report
+to inspect text transfer volume before enabling n8n.
 
 The gallery renders image frames only for saved screenshots. A single successful protocol uses the card's available width; the other protocol appears as a compact status row. With no image, the domain remains a compact DNS entry with check details. An earlier successful image can remain visible with a clear previous-capture label when a newer attempt fails or is skipped.
 

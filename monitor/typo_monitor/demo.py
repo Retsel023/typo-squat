@@ -7,7 +7,6 @@ import shutil
 
 def _demo_captures(service, run, observations, *, changed=False):
     """Use labeled, locally captured fixtures rather than inventing real evidence."""
-    from .visuals import annotate_captures
     workdir = service.data_dir / "runs" / run["id"]
     target = workdir / "screenshots"
     target.mkdir(parents=True)
@@ -31,8 +30,7 @@ def _demo_captures(service, run, observations, *, changed=False):
                 "title": "SIMULATED local fixture · " + image, "http_status": None if failed else 200,
                 "error": "Simulated HTTP capture timeout" if failed else None,
                 "captured_at": datetime.now(timezone.utc).isoformat()})
-    return annotate_captures(captures, workdir=workdir, data_dir=service.data_dir,
-        previous=lambda domain, scheme: service.store.latest_successful_capture(run["project_id"], domain, scheme))
+    return captures
 
 
 def seed_demo(service):

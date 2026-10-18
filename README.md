@@ -36,9 +36,9 @@ for native setup, scheduling, migration, and current limits. The old shell
 installers and V1/V2 scripts are retained as historical sources; the new image
 does not execute them.
 
-Gowitness captures both HTTP and HTTPS and preserves dated image history. Local
-pixel comparison tracks changes and collapses identical protocol images in the
-gallery. During MassDNS, complete positive DNS results can enter bounded web
+Gowitness captures both HTTP and HTTPS and preserves dated image history for
+manual review. Automatic image change detection has been removed; static
+text, title, form/link and endpoint observations drive website changelogs. During MassDNS, complete positive DNS results can enter bounded web
 checks and feed responsive URLs to Gowitness before the bulk DNS job finishes.
 Accepted findings still publish together when the run completes.
 The [n8n Cloud workflow](workflows/n8n-text-review.json) can orchestrate

@@ -57,7 +57,7 @@ docker compose logs -f --tail=100 monitor
 ```
 
 The application logs each run UUID and its discovery, generation/cache reuse,
-DNS, parking, screenshot and image-comparison stages. DNS progress includes
+DNS, parking and screenshot stages. DNS progress includes
 checked/resolved/negative/uncertain counts. Native runs print the same messages
 to their terminal. The scan details page also shows the current stage and its
 counts, with an expandable **Live output** panel for activity and actual tool
@@ -204,10 +204,21 @@ query strings), form actions and field purposes contribute to the fingerprint.
 
 Unchanged content, title, HTTP endpoint and route can skip Gowitness only with
 a matching successful screenshot baseline still on disk. New/changed content,
-missing/failed baselines, HTTP errors and incomplete/unreadable/sparse dynamic
+missing or mismatched image baselines, HTTP errors and incomplete/unreadable/sparse dynamic
 responses still reach the browser. Older reports without text need a fresh
-baseline once. Screenshots remain for manual visual review; automated AI review
+baseline once. An intervening failed screenshot does not force another capture
+when fresh comparable checks still match a valid older image. Screenshots remain
+for manual visual review; automated AI review
 uses complete new/changed text only, even if its screenshot failed.
+
+Each report entry has **Capture decision**, explaining full mode, periodic
+refresh, an uncertain check, a missing/mismatched image baseline or a changed
+proxy route. Older scans without decision metadata say it was not recorded.
+Automatic image change detection and similarity badges are removed. Even
+historical image-comparison metadata cannot add entries to change-only reports.
+Periodic screenshots of unchanged text stay in inventory/history for human review,
+and full reports still show all eligible captures. HTTP/HTTPS screenshot views
+remain independent; AI text deduplication is unchanged.
 
 The **Website changelog** shows new/changed observations, before/after titles,
 expandable text diffs and this run's screenshots. It does not repeat old images.
@@ -570,9 +581,9 @@ and [discovery options](../docs/DISCOVERY.md).
 The default gallery shows dated HTTP/HTTPS captures. Candidate review includes
 full images, previous/current comparisons, original-source reference captures,
 and attempt history. Failed attempts can display a clearly dated older image.
-Exact HTTP/HTTPS duplicates share one gallery image; both raw captures remain.
-Similar images are labeled as similar. Any changed decoded pixels remain a
-local image change, not an automatic impersonation verdict.
+HTTP/HTTPS screenshots are shown independently. The manual comparison view
+shows earlier/current images without calculating hashes or change verdicts.
+Automatic change detection uses static text and endpoint metadata only.
 
 The optional n8n Cloud workflow calls the server's token-protected API rather
 than trying to run Linux tools inside n8n. Set `TYPO_MONITOR_API_TOKEN` to at least

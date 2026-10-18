@@ -8,7 +8,7 @@ if (runProgress) {
     generation: "Generating typo candidates", dns: "Checking DNS",
     pipeline: "Checking DNS and capturing websites",
     parking: "Checking parking signals", websites: "Checking website responses",
-    screenshots: "Capturing websites", comparison: "Comparing images",
+    screenshots: "Capturing websites",
     publishing: "Saving results", completed: "Completed",
     partial: "Completed with gaps", cancelled: "Stopped", failed: "Failed"
   };

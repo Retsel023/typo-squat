@@ -57,7 +57,8 @@ changes may require periodic/full browser captures for human review.
 
 A routine change-only scan skips Gowitness only when content, title, endpoint,
 route and a saved successful screenshot baseline match and are not due for
-refresh. Incomplete, oversized, unreadable, non-HTML, error or sparse dynamic
+refresh. A failed intervening browser attempt does not invalidate an older
+matching successful image. Incomplete, oversized, unreadable, non-HTML, error or sparse dynamic
 responses remain eligible for browser capture. They do **not** enter the AI text
 queue because a complete useful comparison cannot be established.
 Older scans without text need a fresh baseline. Title-only mode remains available

@@ -243,10 +243,21 @@ query strings), form actions and field purposes contribute to the fingerprint.
 
 Unchanged content, title, HTTP endpoint and route can skip Gowitness only with
 a matching successful screenshot baseline still on disk. New/changed content,
-missing/failed baselines, HTTP errors and incomplete/unreadable/sparse dynamic
+missing or mismatched image baselines, HTTP errors and incomplete/unreadable/sparse dynamic
 responses still reach the browser. Older reports without text need a fresh
-baseline once. Screenshots remain for manual visual review; automated AI review
+baseline once. An intervening failed screenshot does not force another capture
+when fresh comparable checks still match a valid older image. Screenshots remain
+for manual visual review; automated AI review
 uses complete new/changed text only, even if its screenshot failed.
+
+Each report entry has **Capture decision**, explaining full mode, periodic
+refresh, an uncertain check, a missing/mismatched image baseline or a changed
+proxy route. Older scans without decision metadata say it was not recorded.
+Automatic image change detection and similarity badges are removed. Even
+historical image-comparison metadata cannot add entries to change-only reports.
+Periodic screenshots of unchanged text stay in inventory/history for human review,
+and full reports still show all eligible captures. HTTP/HTTPS screenshot views
+remain independent; AI text deduplication is unchanged.
 
 The **Website changelog** shows new/changed observations, before/after titles,
 expandable text diffs and this run's screenshots. It does not repeat old images.
@@ -283,7 +294,7 @@ docker compose logs -f --tail=100 monitor
 ```
 
 Logs include the run UUID and transitions through discovery, generation/reuse,
-DNS, parking, screenshots and image comparison. DNS progress reports checked,
+DNS, parking and screenshots. DNS progress reports checked,
 resolved, negative and uncertain counts. The scan details page shows live stage
 counts and an expandable **Live output** panel with activity and actual tool
 output. It updates every four seconds while the panel is open, preserving your

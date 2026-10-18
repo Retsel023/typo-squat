@@ -63,7 +63,10 @@ def compare(capture, domain, row, diagnostic):
     previous = (old or {}).get("preflight", {})
     policy = getattr(capture, "capture_policy", {})
     text_mode = policy.get("comparison", "title") == "text"
-    diagnostic.update(web_change="unknown", previous_title=previous.get("title"),
+    diagnostic.update(web_change="unknown", comparison_mode="text" if text_mode else "title",
+                      previous_title=previous.get("title"),
+                      previous_title_status=previous.get("title_status"),
+                      previous_content_status=previous.get("content_status"),
                       previous_run_id=(old or {}).get("run_id"),
                       previous_endpoint={key: previous.get(key) for key in
                                          ("title_url", "http_status", "title_http_status", "tls_verified")})
@@ -92,37 +95,53 @@ def compare(capture, domain, row, diagnostic):
     elif not text_mode and _complete(diagnostic) and not _complete(previous):
         diagnostic["web_change"] = "first_title_observation"
 
-    if (policy.get("mode", "full") != "changes" or diagnostic["web_change"] != "unchanged"
-            or not image or not old or (old["status"] != "captured"
-                and previous.get("skip_reason") not in {"unchanged_title", "unchanged_content"})):
+    def recapture(reason):
+        diagnostic.update(capture_decision="capture", capture_reason=reason)
         return False
+
+    if diagnostic["status"] != "http_response":
+        diagnostic.update(capture_decision="skip", capture_reason=diagnostic["status"])
+        return False
+    if policy.get("mode", "full") != "changes":
+        return recapture("full_report")
+    if diagnostic["web_change"] != "unchanged":
+        if diagnostic["web_change"] != "unknown":
+            return recapture(diagnostic["web_change"])
+        if not (text_complete(diagnostic) if text_mode else _complete(diagnostic)):
+            return recapture("current_text_uncertain" if text_mode else "current_title_uncertain")
+        return recapture("previous_text_unavailable" if text_mode else "previous_title_unavailable")
+    # Fresh comparable observations and a matching successful image are enough.
+    # A failed intervening browser attempt does not invalidate that saved image.
+    if not image:
+        return recapture("image_baseline_missing")
+    diagnostic["capture_baseline_run_id"] = image["run_id"]
     image_probe = image.get("preflight", {})
     comparable = (text_complete(image_probe) and image_probe.get("content_sha256") == diagnostic.get("content_sha256")
         and image_probe.get("content_version") == diagnostic.get("content_version")) if text_mode else _complete(image_probe)
     if (not comparable or image_probe.get("title") != diagnostic.get("title")
             or not _same_endpoint(diagnostic, image_probe)):
-        return False
+        return recapture("image_baseline_mismatch")
     # Moving the website stage to another proxy is a fresh browser baseline.
     def route_key(route):
         return (bool(route.get("enabled")), route.get("endpoint") if route.get("enabled") else None)
     if route_key(baseline.get("route", {})) != route_key(getattr(capture, "capture_route", {})):
-        return False
+        return recapture("proxy_route_changed")
     try:
         root = Path(capture.baseline_root).resolve()
         run_root = (root / "runs" / image["run_id"]).resolve()
         path = (run_root / image["relative_path"]).resolve()
         if not path.is_relative_to(run_root) or not run_root.is_relative_to(root) or not path.is_file():
-            return False
+            return recapture("image_baseline_unavailable")
         age = datetime.now(timezone.utc) - datetime.fromisoformat(image["captured_at"])
         if age < timedelta(0):
-            return False
+            return recapture("image_baseline_future_date")
         refresh = policy.get("refresh_days", 30)
         if refresh and age >= timedelta(days=refresh):
-            diagnostic["capture_reason"] = "periodic_refresh"
-            return False
+            return recapture("periodic_refresh")
     except (AttributeError, KeyError, TypeError, ValueError, OSError, RuntimeError):
-        return False
-    diagnostic.update(skip_reason="unchanged_content" if text_mode else "unchanged_title", baseline_run_id=image["run_id"])
+        return recapture("image_baseline_unavailable")
+    reason = "unchanged_content" if text_mode else "unchanged_title"
+    diagnostic.update(skip_reason=reason, capture_decision="skip", capture_reason=reason, baseline_run_id=image["run_id"])
     return True
 
 
@@ -131,36 +150,43 @@ CHANGE_LABELS = {"first_observation": "First website observation", "first_title_
                  "structure_changed": "Form or link details changed",
                  "title_changed": "Title changed",
                  "endpoint_changed": "HTTP endpoint changed", "became_available": "Website now responds",
-                 "became_unavailable": "Website stopped responding", "image_changed": "Image changed",
-                 "first_image": "First screenshot"}
+                 "became_unavailable": "Website stopped responding"}
+
+CAPTURE_REASONS = {
+    **CHANGE_LABELS,
+    "full_report": "Full capture / report was requested; unchanged pages are captured too.",
+    "periodic_refresh": "The saved screenshot reached the configured refresh age.",
+    "current_title_uncertain": "The current static title check was incomplete or was not a successful 2xx response.",
+    "current_text_uncertain": "The current static text check was incomplete or was not a successful 2xx response.",
+    "previous_title_unavailable": "There was no comparable successful static title check in the previous accepted run.",
+    "previous_text_unavailable": "There was no comparable complete text check in the previous accepted run.",
+    "image_baseline_missing": "No successful saved screenshot baseline was available for this protocol.",
+    "image_baseline_mismatch": "The saved screenshot's static title/content or HTTP endpoint did not match the fresh check.",
+    "image_baseline_unavailable": "The saved screenshot file or its date/path metadata was unavailable or invalid.",
+    "image_baseline_future_date": "The saved screenshot had a future timestamp; its age could not be trusted.",
+    "proxy_route_changed": "The configured website proxy route changed since the saved screenshot.",
+    "unchanged_title": "The fresh title and endpoint matched a valid saved screenshot; capture was skipped.",
+    "unchanged_content": "The fresh content, title and endpoint matched a valid saved screenshot; capture was skipped.",
+    "title_rule": "A configured title exclusion matched; capture was skipped.",
+    "no_http_response": "No HTTP response was observed; capture was skipped.",
+    "unknown": "The HTTP response check was uncertain; capture was skipped.",
+}
 
 
 def report_entries(captures, mode="changes"):
     entries = []
     for capture in captures:
-        probe, visual = capture.get("preflight", {}), capture.get("visual", {})
+        probe = capture.get("preflight", {})
         if mode == "changes" and probe.get("skip_reason") in {"title_rule", "unchanged_title", "unchanged_content"}:
             continue
         change = probe.get("web_change")
         label = CHANGE_LABELS.get(change)
-        if not label and capture["status"] == "captured":
-            label = {"changed": "Image changed", "first_capture": "First screenshot"}.get(visual.get("change"))
+        capture_reason = probe.get("capture_reason")
         if mode == "changes" and not label:
             continue
         entries.append({"capture": capture, "reason": label or "Full report entry",
+                        "capture_reason": CAPTURE_REASONS.get(capture_reason,
+                            "This older scan did not record why the browser was requested."),
                         "before_title": probe.get("previous_title"), "after_title": probe.get("title"),
-                        "previous_run_id": probe.get("previous_run_id"), "display_image": True})
-    by_key = {(entry["capture"]["domain"], entry["capture"]["scheme"]): entry for entry in entries}
-    for entry in entries:
-        capture = entry["capture"]
-        visual = capture.get("visual", {})
-        # Collapse only identical current images of this same domain. Protocol
-        # title histories remain separate entries even when pixels coincide.
-        if capture["scheme"] != "http" or visual.get("duplicate_kind") != "exact" or visual.get("duplicate_of") != "https":
-            continue
-        other = by_key.get((capture["domain"], "https"), {}).get("capture", {})
-        digest = visual.get("pixel_sha256")
-        if (capture["status"] == other.get("status") == "captured" and digest
-                and digest == other.get("visual", {}).get("pixel_sha256")):
-            entry.update(display_image=False, duplicate_protocol="HTTPS")
+                        "previous_run_id": probe.get("previous_run_id")})
     return entries
