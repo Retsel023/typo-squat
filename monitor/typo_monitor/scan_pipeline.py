@@ -128,7 +128,7 @@ class CaptureOverlap:
             elif stage == "screenshots":
                 if "reported" in values:
                     self.metrics["captures_reported"] = values["reported"]
-                for key in ("eligible", "launched", "skipped", "title_filtered", "title_unchanged", "text_unchanged", "titles_found",
+                for key in ("eligible", "launched", "skipped", "title_filtered", "title_unchanged", "text_unchanged", "body_duplicates", "titles_found",
                             "browser_workers", "page_timeout_seconds", "screenshot_delay_seconds", "web_workers"):
                     if key in values:
                         self.metrics[key] = values[key]
@@ -181,7 +181,8 @@ class CaptureOverlap:
                      unavailable=sum(row["status"] == "unavailable" for row in rows),
                      skipped=sum(row["status"] == "skipped" for row in rows),
                      eligible=sum(row.get("preflight", {}).get("status") == "http_response"
-                                  and row.get("preflight", {}).get("skip_reason") not in {"title_rule", "unchanged_title", "unchanged_content"} for row in rows),
+                                  and row.get("preflight", {}).get("skip_reason") not in {"title_rule", "unchanged_title", "unchanged_content", "duplicate_body"} for row in rows),
+                     body_duplicates=sum(row.get("preflight", {}).get("skip_reason") == "duplicate_body" for row in rows),
                      title_filtered=sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows),
                      browser_title_filtered=sum(row.get("preflight", {}).get("report_exclusion") == "browser_title_rule" for row in rows),
                      text_unchanged=sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for row in rows),

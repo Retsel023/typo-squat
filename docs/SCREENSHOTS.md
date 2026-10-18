@@ -39,7 +39,28 @@ DNS inventory is unaffected, and future scans check these endpoints again.
 An HTTP response with incomplete text can still reach Gowitness; that differs
 from a TLS/connection check that produced no HTTP response at all.
 
-HTTP/HTTPS screenshots are displayed independently. Candidate detail pages can
+Before either URL enters Gowitness, the per-domain pair is checked for matching
+complete fetched HTML. The decoded body bytes are hashed incrementally to EOF
+within the existing timeout and byte cap; truncated/missing/unreadable bodies
+cannot match. Content type/charset, title, final status and destination
+host/path/query must also match. Otherwise eligible pairs share one browser
+request, preferring HTTPS (or an observed changed protocol in change-only mode).
+A deliberately skipped protocol does not force a new image on the next unchanged
+scan solely for its missing image if the paired protocol has passed the existing
+saved-image, route and refresh-age checks. DNS and other domains keep streaming
+while each hostname waits for its own pair.
+
+The report combines a matching pair into one card, explicitly naming the protocol
+captured and retaining each protocol's change details. Both check records remain
+saved. The duplicate row has `skip_reason: duplicate_body` and
+`duplicate_body_of`; the selected row records `body_shared_with`. No image path
+or successful capture is fabricated for the skipped protocol. If the selected
+browser fails, its failure remains visible rather than claiming both protocols
+were captured. No image files or old reports are deleted. Equality of static HTML
+does not prove equal rendered pixels or external/JavaScript content; neither
+pixel comparison nor text-only similarity drives this optimization.
+
+Distinct HTTP/HTTPS bodies have separate screenshots. Candidate detail pages can
 show earlier/current screenshots side by side, selected from saved history
 without decoding or comparing their pixels. Historical visual-comparison metadata
 is retained on disk but does not drive report selection or gallery labels.

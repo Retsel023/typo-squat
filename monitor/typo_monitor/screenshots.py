@@ -84,6 +84,11 @@ def _validated_preflight(diagnostics, requested):
             raise ValueError("Website preflight returned invalid title metadata.")
         validated[url].update(title=title, title_status=title_status, title_url=title_url,
                               title_http_status=title_code, title_bytes=title_bytes)
+        body_hash, body_type = entry.get("body_sha256"), entry.get("body_content_type")
+        if (body_hash is not None and (not isinstance(body_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", body_hash))
+                or body_type is not None and (not isinstance(body_type, str) or len(body_type) > 256)):
+            raise ValueError("Invalid complete-body fingerprint metadata.")
+        validated[url].update(body_sha256=body_hash, body_content_type=body_type)
         content_status = entry.get("content_status", "disabled")
         page_text = entry.get("page_text", "")
         if (not isinstance(content_status, str) or content_status not in TEXT_STATUSES
@@ -139,6 +144,60 @@ def _apply_preflight(capture, row, diagnostic, domain):
                    captured_at=diagnostic["checked_at"])
         return False
     return True
+
+
+def _deduplicate_protocols(capture, rows, eligible):
+    """Queue one browser only for complete, identical same-host HTML bodies."""
+    from urllib.parse import urlsplit
+    from .capture_changes import CHANGE_LABELS
+    if len(rows) != 2 or not any(eligible.get(row["url"]) for row in rows):
+        return
+
+    def identity(row):
+        probe = row["preflight"]
+        if (probe.get("status") != "http_response" or not probe.get("body_sha256")
+                or probe.get("body_content_type") is None
+                or probe.get("title_status") not in {"found", "missing"}):
+            return None
+        try:
+            target = urlsplit(probe["title_url"])
+            port = target.port
+            if target.scheme not in {"http", "https"} or not target.hostname:
+                return None
+            port = None if port in {None, 80 if target.scheme == "http" else 443} else port
+        except (KeyError, TypeError, ValueError):
+            return None
+        return (probe["body_sha256"], probe["body_content_type"], probe.get("title"),
+                probe.get("title_http_status"), target.hostname, port, target.path or "/", target.query)
+
+    first, second = map(identity, rows)
+    if first is None or first != second:
+        return
+    # In a changelog keep an endpoint with an observed change as the image's
+    # actual identity; otherwise prefer HTTPS. No cross-domain deduplication.
+    changes = getattr(capture, "capture_policy", {}).get("mode") == "changes"
+    if all(eligible.get(row["url"]) for row in rows):
+        source = max(rows, key=lambda row: (changes and row["preflight"].get("web_change") in CHANGE_LABELS,
+                                           row["scheme"] == "https"))
+    else:
+        candidate = next(row for row in rows if eligible.get(row["url"]))
+        source = next(row for row in rows if row is not candidate)
+        probe, baseline = candidate["preflight"], source["preflight"]
+        # A deliberately skipped protocol must not force its missing image
+        # to be captured on the next unchanged scan. The other protocol has
+        # already passed compare()'s saved-image, route and age checks.
+        if not (changes and probe.get("web_change") == "unchanged"
+                and probe.get("capture_reason") == "image_baseline_missing"
+                and probe.get("previous_duplicate_body_of") == source["scheme"]
+                and baseline.get("skip_reason") in {"unchanged_title", "unchanged_content"}):
+            return
+    duplicate = next(row for row in rows if row is not source)
+    duplicate["preflight"].update(skip_reason="duplicate_body", capture_decision="skip",
+                                  capture_reason="duplicate_body", duplicate_body_of=source["scheme"])
+    duplicate.update(status="skipped", captured_at=duplicate["preflight"]["checked_at"],
+                     error=f"Complete fetched HTML matches {source['scheme'].upper()}; duplicate browser capture skipped.")
+    source["preflight"]["body_shared_with"] = duplicate["scheme"]
+    eligible[duplicate["url"]] = False
 
 
 def _image_path(workdir, filename):
@@ -318,7 +377,7 @@ class _JsonlProgress:
 
 
 class GowitnessCapture:
-    """Capture HTTP and HTTPS independently without modifying DNS observations.
+    """Check both protocols, sharing captures for matching complete HTML.
 
     A supported Gowitness binary and an explicit or installed Chrome/Chromium
     binary are required. Browser downloads and filename inference are avoided.
@@ -379,6 +438,7 @@ class GowitnessCapture:
         title_filtered = sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows)
         title_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for row in rows)
         text_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for row in rows)
+        body_duplicates = sum(row.get("preflight", {}).get("skip_reason") == "duplicate_body" for row in rows)
         browser_filtered = sum(row.get("preflight", {}).get("report_exclusion") == "browser_title_rule" for row in rows)
         if title_filtered:
             detail += f" {title_filtered} endpoints excluded by configured title phrases; DNS inventory was retained."
@@ -386,6 +446,8 @@ class GowitnessCapture:
             detail += f" {title_unchanged} endpoints had unchanged titles and did not request screenshots."
         if text_unchanged:
             detail += f" {text_unchanged} endpoints had unchanged page text and did not request screenshots."
+        if body_duplicates:
+            detail += f" {body_duplicates} duplicate browser requests skipped for matching HTTP/HTTPS bodies."
         if browser_filtered:
             detail += f" {browser_filtered} browser-title matches excluded from reports/AI after capture; any captured files retained in history."
         return {"status": "failed" if failed else "partial" if issue or unsuccessful or counts["unknown"] else "ok",
@@ -393,9 +455,10 @@ class GowitnessCapture:
                 "attempts": len(rows), "captured": captured,
                 "failed": sum(row["status"] == "failed" for row in rows),
                 "unavailable": sum(row["status"] == "unavailable" for row in rows),
-                "eligible": counts["http_response"] - title_filtered - title_unchanged - text_unchanged,
+                "eligible": counts["http_response"] - title_filtered - title_unchanged - text_unchanged - body_duplicates,
                 "title_filtered": title_filtered,
                 "browser_title_filtered": browser_filtered,
+                "body_duplicates": body_duplicates,
                 "title_unchanged": title_unchanged,
                 "text_unchanged": text_unchanged,
                 "titles_found": sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),
@@ -450,14 +513,17 @@ class GowitnessCapture:
                 with preflight_file.open("x", encoding="utf-8") as stream:
                     json.dump({"error": str(error), "checked_at": _now()}, stream, indent=2)
                 raise
+            eligible = {}
             for url, diagnostic in diagnostics.items():
                 row = requested[url]
-                _apply_preflight(self, row, diagnostic, url.split("://", 1)[1].rsplit(":", 1)[0])
+                eligible[url] = _apply_preflight(self, row, diagnostic, url.split("://", 1)[1].rsplit(":", 1)[0])
+            for rows in results.values():
+                _deduplicate_protocols(self, rows, eligible)
             with preflight_file.open("x", encoding="utf-8") as stream:
                 json.dump(diagnostics, stream, indent=2)
-            requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"
-                         and row["preflight"].get("skip_reason") not in {"title_rule", "unchanged_title", "unchanged_content"}}
+            requested = {url: row for url, row in requested.items() if eligible[url]}
             progress_metrics = {**self.performance_metrics(), "eligible": len(requested), "launched": 0,
+                                "body_duplicates": sum(row.get("preflight", {}).get("skip_reason") == "duplicate_body" for rows in results.values() for row in rows),
                                 "title_filtered": sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for rows in results.values() for row in rows),
                                 "title_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for rows in results.values() for row in rows),
                                 "text_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for rows in results.values() for row in rows),

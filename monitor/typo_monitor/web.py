@@ -100,7 +100,7 @@ def _has_capture_image(capture):
 
 def _saved_capture(attempt):
     probe = attempt.get("preflight", {}) if isinstance(attempt, dict) else {}
-    if probe.get("skip_reason") == "title_rule" or probe.get("report_exclusion") == "browser_title_rule":
+    if probe.get("skip_reason") in {"title_rule", "duplicate_body"} or probe.get("report_exclusion") == "browser_title_rule":
         return None
     if _has_capture_image(attempt):
         return attempt
@@ -119,6 +119,9 @@ def _capture_status(attempt):
     error = str(attempt.get("error") or "").strip().lower()
     if (attempt.get("preflight") or {}).get("report_exclusion") == "browser_title_rule":
         return "Excluded after browser title check"
+    if (attempt.get("preflight") or {}).get("skip_reason") == "duplicate_body":
+        source = (attempt.get("preflight") or {}).get("duplicate_body_of", "other protocol")
+        return f"HTML matches {source.upper()} · duplicate capture skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_content":
         return "Text unchanged · capture skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_title":

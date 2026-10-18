@@ -82,6 +82,7 @@ def compare(capture, domain, row, diagnostic):
                       previous_title=previous.get("title"),
                       previous_title_status=previous.get("title_status"),
                       previous_content_status=previous.get("content_status"),
+                      previous_duplicate_body_of=previous.get("duplicate_body_of"),
                       previous_run_id=(old or {}).get("run_id"),
                       previous_endpoint={key: previous.get(key) for key in
                                          ("title_url", "http_status", "title_http_status", "tls_verified")})
@@ -183,6 +184,7 @@ CAPTURE_REASONS = {
     "unchanged_title": "The fresh title and endpoint matched a valid saved screenshot; capture was skipped.",
     "unchanged_content": "The fresh content, title and endpoint matched a valid saved screenshot; capture was skipped.",
     "title_rule": "A configured title exclusion matched; capture was skipped.",
+    "duplicate_body": "The complete fetched HTTP and HTTPS HTML matched; a duplicate browser capture was skipped.",
     "no_http_response": "No HTTP response was observed; capture was skipped.",
     "unknown": "The HTTP response check was uncertain; capture was skipped.",
 }
@@ -207,6 +209,7 @@ def website_check_diagnostics(captures):
 
 def report_entries(captures, mode="changes"):
     entries = []
+    by_key = {(row["domain"], row["scheme"]): row for row in captures}
     for capture in captures:
         probe = capture.get("preflight", {})
         # Transport failures are diagnostic records, not website review entries.
@@ -214,7 +217,7 @@ def report_entries(captures, mode="changes"):
         if probe.get("status") != "http_response" and not (
                 not probe.get("status") and capture.get("status") == "captured" and capture.get("relative_path")):
             continue
-        if probe.get("skip_reason") == "title_rule" or probe.get("report_exclusion") == "browser_title_rule":
+        if probe.get("skip_reason") in {"title_rule", "duplicate_body"} or probe.get("report_exclusion") == "browser_title_rule":
             continue
         if mode == "changes" and probe.get("skip_reason") in {"unchanged_title", "unchanged_content"}:
             continue
@@ -223,7 +226,12 @@ def report_entries(captures, mode="changes"):
         capture_reason = probe.get("capture_reason")
         if mode == "changes" and not label:
             continue
+        companion = by_key.get((capture["domain"], probe.get("body_shared_with")))
+        if companion and companion.get("preflight", {}).get("duplicate_body_of") != capture["scheme"]:
+            companion = None
         entries.append({"capture": capture, "reason": label or "Full report entry",
+                        "schemes": ["http", "https"] if companion else [capture["scheme"]],
+                        "protocol_observations": [capture, companion] if companion else [],
                         "capture_reason": CAPTURE_REASONS.get(capture_reason,
                             "This older scan did not record why the browser was requested."),
                         "before_title": probe.get("previous_title"), "after_title": probe.get("title"),

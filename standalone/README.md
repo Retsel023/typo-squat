@@ -264,8 +264,9 @@ proxy route. Older scans without decision metadata say it was not recorded.
 Automatic image change detection and similarity badges are removed. Even
 historical image-comparison metadata cannot add entries to change-only reports.
 Periodic screenshots of unchanged text stay in inventory/history for human review,
-and full reports still show all eligible captures. HTTP/HTTPS screenshot views
-remain independent; AI text deduplication is unchanged.
+and full reports still show all eligible captures. HTTP/HTTPS results stay
+separate unless their complete fetched HTML matches within the same domain;
+matching pairs share one browser capture. AI behavior is unchanged.
 
 The **Website changelog** shows new/changed observations, before/after titles,
 expandable text diffs and this run's screenshots. It does not repeat old images.
@@ -282,6 +283,24 @@ full enumeration/capture can accompany weekly cached changelogs. If both are due
 full capture wins when either requires it. Policy is snapshotted at queue time.
 Native scans accept `scan --capture-mode changes` or `full`; the API accepts
 `capture_mode` independently of `discovery_mode`.
+
+Before Gowitness, both protocols are checked for each hostname. A complete-body
+SHA-256 (decoded HTTP content bytes, without text normalization), matching
+content type/charset, title, final status and destination host/path/query allow
+one browser request for an otherwise eligible HTTP/HTTPS pair. HTTPS is preferred;
+a change-only report prefers a protocol with an observed change. Both check
+records are saved, and the report combines them into one card identifying the
+protocol actually captured. No bodies are compared across different domains.
+
+The fingerprint reuses the existing GET, byte limits and timeout, reading to EOF
+within those limits. Missing, truncated, unreadable or different bodies do not
+merge. Title-only mode retains its smaller 64 KiB limit; text mode uses 512 KiB.
+A skipped duplicate does not force an extra screenshot on the next unchanged
+scan solely because it has no image, when its paired protocol still has a valid
+unchanged image baseline. A failed selected capture stays a failure; the skipped
+protocol does not claim a screenshot, and both endpoints are checked next run.
+HTML equality is not a guarantee of identical JavaScript execution, external
+assets or rendered pixels; no image comparison is performed.
 
 See [text-only n8n review](../docs/N8N.md) and the [suggested AI prompt](../docs/AI_TEXT_PROMPT.md).
 

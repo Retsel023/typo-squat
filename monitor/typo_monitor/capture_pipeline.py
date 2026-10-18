@@ -16,7 +16,7 @@ from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
 from .screenshots import (
     SUPPORTED_VERSION, _JsonlProgress, _row, _validated_preflight,
-    _validate_metadata, _apply_preflight,
+    _validate_metadata, _apply_preflight, _deduplicate_protocols,
 )
 from .website_probe import WebsiteProbe
 
@@ -177,6 +177,8 @@ def capture_stream(capture, domains_iterator, workdir):
     title_filtered = 0
     title_unchanged = 0
     text_unchanged = 0
+    body_duplicates = 0
+    pending = {}
 
     def poll():
         nonlocal last_poll, issue
@@ -185,8 +187,9 @@ def capture_stream(capture, domains_iterator, workdir):
             issue = f"Gowitness exited before its input closed (status {process.returncode}); see gowitness.log."
         if monitor is not None and time.monotonic() - last_poll >= 1:
             monitor.metrics.update(eligible=len(requested), launched=launched, title_filtered=title_filtered,
-                                   title_unchanged=title_unchanged, text_unchanged=text_unchanged,
-                                   skipped=title_filtered + title_unchanged + text_unchanged + sum(counts[key] for key in ("no_http_response", "unknown")), input_open=True)
+                                   title_unchanged=title_unchanged, text_unchanged=text_unchanged, body_duplicates=body_duplicates,
+                                   skipped=title_filtered + title_unchanged + text_unchanged + body_duplicates
+                                       + sum(counts[key] for key in ("no_http_response", "unknown")), input_open=True)
             monitor.poll()
             last_poll = time.monotonic()
 
@@ -300,7 +303,7 @@ def capture_stream(capture, domains_iterator, workdir):
             domain = url.split("://", 1)[1].rsplit(":", 1)[0]
             scheme = url.split(":", 1)[0]
             row = next(row for row in results[domain] if row["scheme"] == scheme)
-            eligible = _apply_preflight(capture, row, diagnostic, domain)
+            pending[url] = _apply_preflight(capture, row, diagnostic, domain)
             title_filtered += diagnostic.get("skip_reason") == "title_rule"
             title_unchanged += diagnostic.get("skip_reason") == "unchanged_title"
             text_unchanged += diagnostic.get("skip_reason") == "unchanged_content"
@@ -308,23 +311,32 @@ def capture_stream(capture, domains_iterator, workdir):
                              metrics={"response": counts["http_response"],
                                       "no_response": counts["no_http_response"],
                                       "uncertain": counts["unknown"], "input_open": True})
-            if not eligible:
-                _report_progress(callback, "screenshots", metrics={"eligible": len(requested), "launched": launched,
-                    "title_filtered": title_filtered,
-                    "title_unchanged": title_unchanged, "text_unchanged": text_unchanged,
-                    "skipped": title_filtered + title_unchanged + text_unchanged + counts["no_http_response"] + counts["unknown"]})
+            # Wait only for this hostname's pair, never for all DNS results.
+            rows = results[domain]
+            if not all(item["url"] in pending for item in rows):
                 continue
-            requested[url] = row
-            if process is None and issue is None:
-                try:
-                    start()
-                except (OSError, subprocess.TimeoutExpired) as error:
-                    issue = f"Gowitness could not start: {type(error).__name__}; see gowitness.version.txt or gowitness.log."
-            if write_url(url):
-                row["capture_queued"] = True
-                launched += 1
-            else:
-                row.update(status="unavailable", error=issue or "Gowitness input is unavailable.")
+            _deduplicate_protocols(capture, rows, pending)
+            body_duplicates += sum(item["preflight"].get("skip_reason") == "duplicate_body" for item in rows)
+            for item in rows:
+                target = item["url"]
+                if not pending.pop(target):
+                    continue
+                requested[target] = item
+                if process is None and issue is None:
+                    try:
+                        start()
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        issue = f"Gowitness could not start: {type(error).__name__}; see gowitness.version.txt or gowitness.log."
+                if write_url(target):
+                    item["capture_queued"] = True
+                    launched += 1
+                else:
+                    item.update(status="unavailable", error=issue or "Gowitness input is unavailable.")
+            _report_progress(callback, "screenshots", metrics={"eligible": len(requested), "launched": launched,
+                "title_filtered": title_filtered, "body_duplicates": body_duplicates,
+                "title_unchanged": title_unchanged, "text_unchanged": text_unchanged,
+                "skipped": title_filtered + title_unchanged + text_unchanged + body_duplicates
+                    + counts["no_http_response"] + counts["unknown"]})
         capture._check_shutdown()
         with preflight_file.open("x", encoding="utf-8") as stream:
             json.dump(diagnostics, stream, indent=2)

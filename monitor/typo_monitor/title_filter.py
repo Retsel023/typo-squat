@@ -1,6 +1,7 @@
 """Bounded HTML title/text checks and explicit, opt-in screenshot exclusions."""
 
 import codecs
+import hashlib
 from contextlib import ExitStack
 from html.parser import HTMLParser
 import re
@@ -92,7 +93,8 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
     """
     result = {"title": None, "title_status": "missing", "title_url": response.url,
               "title_http_status": response.status_code, "title_bytes": 0,
-              "content_status": "missing" if collect_text else "disabled"}
+              "content_status": "missing" if collect_text else "disabled",
+              "body_sha256": None, "body_content_type": None}
     title_parser = None
 
     def failed(status):
@@ -165,27 +167,36 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                 except LookupError:
                     decoder = codecs.getincrementaldecoder("utf-8-sig")("replace")
                 title_parser = _Title()
+                body_hash = hashlib.sha256()
+                result["body_content_type"] = content_type if len(content_type) <= 256 else None
                 parser, limit, eof = title_parser, MAX_HTML_BYTES, False
                 if collect_text:
                     from .page_text import MAX_BODY_BYTES, PageText
                     parser, limit = PageText(title_parser, current.url), MAX_BODY_BYTES
-                while result["title_bytes"] < limit and not parser.done:
+                while result["title_bytes"] < limit and not parser.truncated:
                     remaining()
                     chunk = body.read(min(4096, limit - result["title_bytes"]))
                     remaining()
                     if not chunk:
-                        parser.feed(decoder.decode(b"", final=True))
-                        parser.close()
+                        if not parser.done:
+                            parser.feed(decoder.decode(b"", final=True))
+                            parser.close()
                         eof = True
                         break
                     result["title_bytes"] += len(chunk)
-                    parser.feed(decoder.decode(chunk))
+                    body_hash.update(chunk)
+                    if not parser.done:
+                        parser.feed(decoder.decode(chunk))
                 title = " ".join(title_parser.text.split())
                 result["title"] = title or None
                 result["title_status"] = ("truncated" if title_parser.truncated or title_parser.inside and not title_parser.complete else "found" if title_parser.complete and title else
                     "truncated" if result["title_bytes"] == limit and not parser.done else "missing")
                 if collect_text:
                     result.update(parser.result(eof or parser.done and not parser.truncated))
+                # Only an actual end-of-body proves equality; a closed HTML
+                # tag, readable text or a bounded prefix cannot establish it.
+                if eof and result["title_bytes"]:
+                    result["body_sha256"] = body_hash.hexdigest()
                 return result
     except (TimeoutError, requests.exceptions.Timeout):
         return failed("timeout")
