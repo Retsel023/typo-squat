@@ -7,8 +7,10 @@ from pathlib import Path
 import json
 import logging
 import math
+import shutil
 import threading
 import time
+from uuid import UUID
 
 from .adapters import AilGenerator, DnsResolver, Subfinder
 from .assetfinder import Assetfinder
@@ -89,6 +91,7 @@ class MonitorService:
         try:
             self.store = Store(self.data_dir)
             self.store.recover_interrupted_runs()
+            self._cleanup_deleted_artifacts()
         except Exception:
             self._instance.close()
             raise
@@ -147,6 +150,63 @@ class MonitorService:
         return {"workers": self.dns_workers if configured is None else configured,
                 "inherited": configured is None}
 
+    def deletion_blocker(self, project_id):
+        """Called under the worker mutex again immediately before mutation."""
+        project = self.store.get_project(project_id)
+        if project is None:
+            raise KeyError(project_id)
+        latest = project.get("last_run")
+        if latest and latest["status"] == "running":
+            return "Stop this project's scan and wait for its worker to finish before deleting."
+        for run_id, future in list(self._futures.items()):
+            if not future.done():
+                run = self.store.get_run(run_id)
+                if run and run["project_id"] == project_id:
+                    return "This project's scan worker is still shutting down. Wait a moment, then try again."
+        return None
+
+    def _cleanup_deleted_artifacts(self):
+        """Remove only known run-owned paths; retry persisted failures on restart."""
+        for run_id in self.store.pending_artifact_cleanup():
+            try:
+                if str(UUID(run_id)) != run_id:
+                    raise ValueError("Invalid cleanup run identity")
+                for folder, names in (("runs", [run_id]), ("progress", [run_id + ".json", run_id + ".log"])):
+                    parent = self.data_dir / folder
+                    if parent.is_symlink():
+                        raise ValueError("Refusing cleanup through a symlinked artifact directory")
+                    for name in names:
+                        path = parent / name
+                        if path.is_symlink():
+                            path.unlink()
+                        elif path.is_dir():
+                            shutil.rmtree(path)
+                        else:
+                            path.unlink(missing_ok=True)
+                self.store.finish_artifact_cleanup(run_id)
+            except (OSError, ValueError):
+                LOG.exception("Artifact cleanup pending for deleted report %s; will retry on restart", run_id)
+        return len(self.store.pending_artifact_cleanup())
+
+    def delete_project(self, project_id):
+        with self._mutex:
+            blocker = self.deletion_blocker(project_id)
+            if blocker:
+                raise RuntimeError(blocker)
+            self.store.delete_project(project_id)
+            return self._cleanup_deleted_artifacts()
+
+    def delete_report(self, run_id):
+        with self._mutex:
+            run = self.store.get_run(run_id)
+            if run is None:
+                raise KeyError(run_id)
+            blocker = self.deletion_blocker(run["project_id"])
+            if blocker:
+                raise RuntimeError(blocker)
+            project_id = self.store.delete_report(run_id)
+            return project_id, self._cleanup_deleted_artifacts()
+
     def discovery_status(self, project):
         return {"mode": project.get("discovery_mode", "enumerate"),
                 "cached_available": self.store.has_candidate_inventory(project["id"]),
@@ -181,6 +241,11 @@ class MonitorService:
         return tools
 
     def schedule_status(self, project):
+        if project.get("schedules"):
+            modes = project["schedules"]
+            return {"modes": modes, "inherited": False,
+                    "interval_hours": max(row["interval_hours"] for row in modes.values()),
+                    "next_run_at": min((row["next_run_at"] for row in modes.values() if row["next_run_at"]), default=None)}
         configured = project.get("schedule_interval_hours")
         inherited = configured is None
         interval = self.interval_hours if inherited else configured
@@ -194,16 +259,32 @@ class MonitorService:
                              or latest["started_at"]) if latest else project["created_at"]
                 next_run = (datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                             + timedelta(hours=interval)).isoformat()
-        return {"interval_hours": interval, "next_run_at": next_run, "inherited": inherited}
+        mode = project.get("discovery_mode", "enumerate")
+        modes = {key: {"interval_hours": interval if key == mode else 0,
+                       "next_run_at": next_run if key == mode else None} for key in ("enumerate", "cached")}
+        return {"interval_hours": interval, "next_run_at": next_run, "inherited": inherited, "modes": modes}
 
-    def _schedule_due(self, project, now=None):
+    def _scheduled_mode(self, project, now=None):
         latest = project.get("last_run")
         if latest and (latest["status"] == "running" or "demo" in latest.get("source_status", {})):
-            return False
+            return None
         schedule = self.schedule_status(project)
-        return bool(schedule["next_run_at"] and
-                    datetime.fromisoformat(schedule["next_run_at"].replace("Z", "+00:00"))
-                    <= (now or datetime.now(timezone.utc)))
+        moment = now or datetime.now(timezone.utc)
+        # Enumeration wins when both are due, satisfying both with one scan.
+        for mode in ("enumerate", "cached"):
+            row = schedule["modes"][mode]
+            if (row["interval_hours"] and row["next_run_at"]
+                    and datetime.fromisoformat(row["next_run_at"].replace("Z", "+00:00")) <= moment
+                    and (mode != "cached" or self.store.has_candidate_inventory(project["id"]))):
+                return mode
+        return None
+
+    def _schedule_due(self, project, now=None):
+        return self._scheduled_mode(project, now) is not None
+
+    def set_schedules(self, project_id, intervals, *, discovery_mode):
+        with self._mutex:
+            return self.store.set_schedules(project_id, intervals, discovery_mode=discovery_mode)
 
     def _report_progress(self, run_id, stage, message=None, **values):
         reporter = self._progress.get(run_id)
@@ -225,8 +306,10 @@ class MonitorService:
             project = self.store.get_project(project_id)
             # Re-read the deadline under the same lock as manual enqueueing.
             # A manual scan or changed schedule may have superseded the tick.
-            if _scheduled and not self._schedule_due(project):
-                return None
+            if _scheduled:
+                discovery_mode = self._scheduled_mode(project)
+                if discovery_mode is None:
+                    return None
             if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
                 raise RuntimeError("This is an offline simulated project. Create a separate project for real scans.")
             mode = Store._discovery_mode(project.get("discovery_mode", "enumerate")
@@ -245,8 +328,7 @@ class MonitorService:
                 LOG.exception("Could not initialize live progress for %s", run["id"])
             try:
                 self._futures[run["id"]] = self._executor.submit(self._execute, run)
-                if (project.get("schedule_interval_hours") or 0) > 0:
-                    self.store.advance_schedule(project_id)
+                self.store.advance_schedule(project_id, discovery_mode=mode)
             except Exception as exc:
                 requested.set()
                 future = self._futures.get(run["id"])
@@ -273,9 +355,7 @@ class MonitorService:
             result = self.store.cancel_run(run_id)
             if result["status"] == "cancelled":
                 self._report_progress(run_id, "cancelled", "Stopped by user; previously accepted results were kept.")
-                project = self.store.get_project(result["project_id"])
-                if (project.get("schedule_interval_hours") or 0) > 0:
-                    self.store.advance_schedule(result["project_id"])
+                self.store.advance_schedule(result["project_id"], discovery_mode=result.get("discovery_mode"))
             future = self._futures.get(run_id)
             if future and future.cancel():
                 self._futures.pop(run_id, None)

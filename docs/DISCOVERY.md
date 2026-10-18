@@ -33,12 +33,17 @@ gaps can still have saved candidates even when their DNS observations were
 uncertain. Reusing those names does not repair the DNS failure that produced
 the uncertainty; the next scan makes fresh requests.
 
-**Default scan mode** under **Scan schedule** persists the project's choice for
-scheduled scans and preselects manual scans. It can be saved with scheduling off.
-Each queued run snapshots its mode, and run details show that original choice.
-Changing a default does not alter a queued or running scan. Existing projects
-start with enumeration enabled; historical runs without a recorded mode are
-shown as unrecorded.
+**Scan schedules** offers independent **Full enumeration** and **Saved inventory**
+intervals. For example, use 720 hours (30 days) for enumeration and 168 hours
+(weekly) for saved-inventory DNS/web checks. When both are due, one full scan covers
+both; cached checks do not postpone enumeration. Cached scheduling waits for an
+initial saved candidate inventory. Existing single schedules remain effective
+until you save the new form.
+
+**Default for manual scans** persists the manual selector's initial choice, even
+with both schedules off. Each automatic cadence chooses its own mode. Each queued
+run snapshots its mode and shows it in run details; changing defaults does not
+alter queued or running scans. Historical runs without a mode remain unrecorded.
 
 The CLI accepts a per-scan override after the `scan` command:
 

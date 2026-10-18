@@ -35,7 +35,8 @@ services:
       - standalone-data:/data
     read_only: true
     tmpfs:
-      - /tmp
+      # Rod extracts its Leakless browser helper here and must execute it.
+      - /tmp:rw,exec,nosuid,nodev,mode=1777
     cap_drop:
       - ALL
     security_opt:

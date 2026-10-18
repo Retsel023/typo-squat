@@ -33,7 +33,12 @@ dependencies, and an unprivileged user. It
 does not run Kali upgrades, the old installers, cron, or shell command queues.
 SQLite and per-run artifacts live in the `monitor-data` named volume at `/data`.
 The application filesystem is read
-only; writable scratch space is provided at `/tmp`.
+only; writable scratch space is provided at `/tmp`. Both Compose profiles explicitly
+allow execution there (`rw,exec,nosuid,nodev,mode=1777`) because Rod/Gowitness
+extracts and launches its Leakless browser helper from that directory. A `noexec`
+mount produces `fork/exec /tmp/leakless-...: permission denied` before screenshots
+can start. Recreate the container with the updated Compose file to apply the mount;
+no change to Chromium's driver or container user is needed.
 
 Stop with `docker compose down`. Keep the named volume to keep history. Back up
 the volume while the application is stopped; copy the entire data directory,
@@ -210,31 +215,57 @@ python -m typo_monitor --data-dir ./data scan --project PROJECT_UUID --discovery
 python -m typo_monitor --discovery-engine subfinder --discovery-timeout 600 serve
 ```
 
-Each client's project page has its own scheduling control. Set a positive
-interval to repeat that client's scans, or choose manual/off to disable its schedule.
-New clients inherit the server's `--interval-hours` default until a client interval
-is saved. An explicit manual/off setting also overrides a positive server default. Per-client intervals and next due times
-persist in SQLite; they survive a restart. A manual scan advances that client's
-next due time so it is not immediately followed by a scheduled duplicate.
+Each client's **Scan schedules** panel has two independent cadences:
+
+- **Full enumeration** refreshes discovery, generates uncached seeds, then checks
+  DNS and eligible websites. For example, 720 hours means every 30 days.
+- **Saved inventory** skips discovery/generation and checks all saved candidates
+  with fresh DNS, followed by website checks and capture. For example, 168 hours
+  means weekly. This cadence waits until an initial scan saves candidates.
+
+Each interval accepts 0 (off) or 1–8760 hours. Intervals are elapsed hours, not
+calendar-month dates. When both are due, enumeration wins and one full scan covers
+both. Queueing a full scan advances both enabled cadences; a saved-inventory scan
+advances only its own cadence. This applies to manual and scheduled scans.
+Schedules and due times persist across restart. Saving unchanged intervals keeps
+their deadlines. Stopping a scan leaves schedules enabled and restarts the affected
+intervals from its stop time; use **Turn both off** to disable future scans.
+
+Existing single schedules and the server's `--interval-hours` fallback continue
+until the project's new form is saved. Saving both intervals as 0 explicitly
+opts out of that server fallback. The scheduler runs only while the server is
+online, skips clients already queued/running and never scans simulated projects.
 
 The **Subdomains** selector beside **Start scan** chooses whether to enumerate
-again or **Use saved inventory**. Saved inventory skips enumeration and typo
-generation; every saved candidate still receives fresh DNS checks, including
-previously non-resolving candidates. A project needs saved candidates first.
-**Default scan mode** in the schedule form is persisted for scheduled scans
-and preselected for manual scans. Save it with an interval of 0 to keep scans
-manual. The chosen mode is frozen when each run is queued and shown in run
-details. Select enumeration periodically to discover new seeds or apply a new
-generation profile. See [scan modes](../docs/DISCOVERY.md#choosing-whether-to-enumerate).
+again or **Use saved inventory** for that manual run. **Default for manual scans**
+preselects this choice; each automatic cadence selects its own mode. Each queued
+run snapshots its mode and concurrency. See [scan modes](../docs/DISCOVERY.md#choosing-whether-to-enumerate).
 
-The server must remain running for schedules to execute. The scheduler checks
-for due clients periodically, skips clients that are already queued/running and
-skips simulated demo projects. Stopping a scan does not disable its future
-schedule; its next attempt moves one interval after the stop time to prevent an
-immediate overdue restart. Turn scheduling off separately if needed. The global fallback uses
-persisted last-attempt times, including failed, partial and cancelled attempts,
-to avoid immediate retry storms. New clients can be scanned manually or wait
-until due.
+## Rename projects and remove saved reports
+
+Use **Manage project** on the client's page to change its display name. Roots,
+IDs, DNS baseline and history are unaffected. The same section offers **Delete
+project…**, which removes that client's schedules, inventory, DNS state, reports,
+captures and logs. Other clients are unaffected. Demo projects can also be renamed
+or deleted.
+
+**Delete report** is available beside finished scans in history and on their
+scan detail page. It removes the report's observations, events, screenshots,
+AI reviews and run/progress logs. It keeps current inventory/DNS state and cached
+generation results. Minimal internal run identity, timing, status and configuration
+remain so pruning reports cannot reset the baseline, lose cache references or
+change the last schedule attempt. Deleted reports no longer appear in history or
+through report/image/API routes. Historical comparisons whose earlier image was
+deleted lose that image; future comparisons use the most recent retained image,
+or start fresh if no image remains. Exported files outside managed run folders
+are not removed.
+
+Deletion uses a separate confirmation page and requires typing `DELETE`. A project
+with queued/running work, including a stopped worker still draining, cannot be
+deleted or have its reports removed. No existing data is deleted on upgrade.
+Artifact cleanup requests are committed with the deletion; interrupted or failed
+filesystem cleanup is retried on server restart and logged. SQLite may retain
+freed pages for reuse; this is report retention, not secure erasure.
 
 An advisory lock prevents another process from recovering live jobs; use the
 GUI for scans while the server is up. Standalone CLI scans can use systemd

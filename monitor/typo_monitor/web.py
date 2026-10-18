@@ -216,10 +216,6 @@ def create_app(service):
             abort(404, description="This project could not be found.")
         return project
 
-    def project_runs(project_id):
-        return sorted(service.store.list_runs(str(project_id), limit=20, include_events=False),
-                      key=lambda run: run.get("started_at", ""), reverse=True)
-
     def live_data(run_id):
         data_dir = getattr(service, "data_dir", None)
         return read_progress(data_dir, str(run_id)), read_tool_output(data_dir, str(run_id))
@@ -334,7 +330,13 @@ def create_app(service):
                         if seed else result["total"])
         default_count = service.store.query_domains(str(project_id), status="resolved", include_seeds=False, limit=1)["total"]
         filter_params = filter_parameters(filters, view)
-        runs = project_runs(project_id)
+        history_text = request.args.get("history_page", "1")
+        if not history_text.isascii() or not history_text.isdigit() or len(history_text) > 8 or int(history_text) < 1:
+            abort(400, description="Choose a valid scan history page number.")
+        history_page = int(history_text)
+        history_rows = service.store.list_runs(str(project_id), limit=21, include_events=False,
+                                              offset=(history_page - 1) * 20)
+        runs = history_rows[:20]
         last_run = project.get("last_run") or (runs[0] if runs else None)
         if hasattr(service, "schedule_status"):
             schedule = service.schedule_status(project)
@@ -352,7 +354,8 @@ def create_app(service):
              "enumeration_enabled": getattr(service, "discovery", True)})
         return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
                                counts=counts, query=query, status_filter=status,
-                               runs=runs, last_run=last_run, page="project",
+                               runs=runs, last_run=last_run, page="project", history_page=history_page,
+                               history_has_more=len(history_rows) > 20,
                                demo=bool(last_run and "demo" in last_run.get("source_status", {})),
                                page_number=page_number, page_count=page_count,
                                filtered_count=result["total"], offset=(page_number - 1) * page_size,
@@ -493,6 +496,16 @@ def create_app(service):
         project = project_or_404(project_id)
         if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
             abort(409, description="Simulated demo projects cannot be scheduled. Create a separate project for real scans.")
+        if "enumerate_hours" in request.form or "cached_hours" in request.form:
+            try:
+                intervals = ({"enumerate": 0, "cached": 0} if request.form.get("action") == "off" else
+                    {mode: float(request.form.get(mode + "_hours", "")) for mode in ("enumerate", "cached")})
+                service.set_schedules(str(project_id), intervals,
+                                      discovery_mode=request.form.get("discovery_mode", "enumerate"))
+            except (ValueError, OverflowError) as error:
+                abort(400, description=str(error) or "Choose valid intervals for both schedules.")
+            flash("Both scan schedules are off." if not any(intervals.values()) else "Independent scan schedules saved.", "success")
+            return redirect(url_for("project_detail", project_id=project_id, _anchor="schedule"), code=303)
         try:
             hours = 0.0 if request.form.get("action") == "off" else float(request.form.get("interval_hours", ""))
             if not math.isfinite(hours) or not (hours == 0 or 1 <= hours <= 8760):
@@ -522,6 +535,63 @@ def create_app(service):
             abort(400, description=str(error))
         flash("DNS settings saved for future scans in this project.", "success")
         return redirect(url_for("project_detail", project_id=project_id, _anchor="dns-settings"), code=303)
+
+    @app.post("/projects/<uuid:project_id>/name")
+    def rename_project(project_id):
+        project_or_404(project_id)
+        try:
+            service.store.rename_project(str(project_id), request.form.get("name", ""))
+        except ValueError as error:
+            abort(400, description=str(error))
+        flash("Project name updated.", "success")
+        return redirect(url_for("project_detail", project_id=project_id, _anchor="manage-project"), code=303)
+
+    def finish_deletion(pending):
+        if pending:
+            flash("Some deleted files could not be removed yet. Cleanup is saved for retry on server restart; see server logs.", "info")
+
+    @app.route("/projects/<uuid:project_id>/delete", methods=["GET", "POST"])
+    def delete_project(project_id):
+        project = project_or_404(project_id)
+        blocker = service.deletion_blocker(str(project_id))
+        code = 200
+        if request.method == "POST":
+            if request.form.get("confirmation") != "DELETE":
+                abort(400, description="Type DELETE to confirm removal.")
+            try:
+                pending = service.delete_project(str(project_id))
+            except KeyError:
+                abort(404, description="This project could not be found.")
+            except RuntimeError as error:
+                blocker, code = str(error), 409
+            else:
+                flash("Project deleted, including its saved reports and schedule.", "success")
+                finish_deletion(pending)
+                return redirect(url_for("dashboard"), code=303)
+        return render_template("delete.html", project=project, report=None, blocker=blocker, page="project"), code
+
+    @app.route("/runs/<uuid:run_id>/delete", methods=["GET", "POST"])
+    def delete_report(run_id):
+        report = service.store.get_run(str(run_id))
+        if report is None:
+            abort(404, description="This scan report could not be found.")
+        project = project_or_404(report["project_id"])
+        blocker = service.deletion_blocker(project["id"])
+        code = 200
+        if request.method == "POST":
+            if request.form.get("confirmation") != "DELETE":
+                abort(400, description="Type DELETE to confirm removal.")
+            try:
+                project_id, pending = service.delete_report(str(run_id))
+            except KeyError:
+                abort(404, description="This scan report could not be found.")
+            except RuntimeError as error:
+                blocker, code = str(error), 409
+            else:
+                flash("Scan report deleted. The project's saved inventory and DNS state were kept.", "success")
+                finish_deletion(pending)
+                return redirect(url_for("project_detail", project_id=project_id, _anchor="history"), code=303)
+        return render_template("delete.html", project=project, report=report, blocker=blocker, page="project"), code
 
     @app.post("/runs/<uuid:run_id>/cancel")
     def cancel_scan(run_id):

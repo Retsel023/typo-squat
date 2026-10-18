@@ -29,7 +29,7 @@ def _json(value) -> str:
 
 class Store:
     _RUN_SUMMARY_COLUMNS = ("id,project_id,status,started_at,finished_at,is_baseline,"
-                            "'[]' AS events_json,counts_json,source_status_json,error,dns_workers,discovery_mode")
+                            "'[]' AS events_json,counts_json,source_status_json,error,dns_workers,discovery_mode,report_deleted")
     _STATE_QUERY = """SELECT d.*,
         EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id
             AND i.domain=d.domain AND i.kind='seed') AS is_seed,
@@ -59,7 +59,8 @@ class Store:
                     events_json TEXT NOT NULL DEFAULT '[]',
                     counts_json TEXT NOT NULL DEFAULT '{}',
                     source_status_json TEXT NOT NULL DEFAULT '{}', error TEXT,
-                    dns_workers INTEGER, discovery_mode TEXT
+                    dns_workers INTEGER, discovery_mode TEXT,
+                    report_deleted INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS one_running_scan
                     ON runs(project_id) WHERE status = 'running';
@@ -119,6 +120,15 @@ class Store:
                     run_id TEXT NOT NULL REFERENCES runs(id), generated_at TEXT NOT NULL,
                     PRIMARY KEY(project_id,signature,seed)
                 );
+                CREATE TABLE IF NOT EXISTS artifact_cleanup (
+                    run_id TEXT PRIMARY KEY
+                );
+                CREATE TABLE IF NOT EXISTS scan_schedules (
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    discovery_mode TEXT NOT NULL CHECK(discovery_mode IN ('enumerate','cached')),
+                    interval_hours REAL NOT NULL, next_run_at TEXT,
+                    PRIMARY KEY(project_id,discovery_mode)
+                );
             """)
         # Existing development databases predate resolver-scope persistence.
         # Serialize the inspection and ALTER to make concurrent startup safe.
@@ -139,6 +149,8 @@ class Store:
                 db.execute("ALTER TABLE runs ADD COLUMN dns_workers INTEGER")
             if "discovery_mode" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN discovery_mode TEXT")
+            if "report_deleted" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN report_deleted INTEGER NOT NULL DEFAULT 0")
             db.execute("""CREATE INDEX IF NOT EXISTS project_schedule_due ON projects(schedule_next_run_at)
                 WHERE schedule_interval_hours>0""")
             capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
@@ -177,6 +189,9 @@ class Store:
             (result["id"],),
         ).fetchone()
         result["last_run"] = Store._run(latest)
+        result["schedules"] = {row["discovery_mode"]: dict(row) for row in db.execute(
+            "SELECT discovery_mode,interval_hours,next_run_at FROM scan_schedules WHERE project_id=?",
+            (result["id"],))}
         return result
 
     @staticmethod
@@ -187,6 +202,7 @@ class Store:
         for key in ("events", "counts", "source_status"):
             result[key] = json.loads(result.pop(key + "_json"))
         result["is_baseline"] = bool(result["is_baseline"])
+        result["report_deleted"] = bool(result.get("report_deleted", False))
         return result
 
     @staticmethod
@@ -358,6 +374,61 @@ class Store:
         with self._connection() as db:
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
+    def rename_project(self, project_id, name):
+        if (not isinstance(name, str) or not name.strip() or len(name.strip()) > 120
+                or any(ord(c) < 32 or ord(c) == 127 for c in name)):
+            raise ValueError("Project name must contain 1–120 printable characters.")
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            db.execute("UPDATE projects SET name=? WHERE id=?", (name.strip(), project_id))
+
+    @staticmethod
+    def _require_idle(db, project_id):
+        if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
+            raise RuntimeError("Stop this project's scan and wait for its worker to finish before deleting.")
+
+    def delete_report(self, run_id):
+        """Remove report content, retaining only scan bookkeeping and cache references.
+
+        Inventory and accepted DNS state are independent of report retention.
+        Keeping the run identity prevents history pruning from resetting the
+        baseline, generation cache or automatic schedule's last attempt time.
+        """
+        with self._connection(write=True) as db:
+            run = db.execute("SELECT * FROM runs WHERE id=? AND report_deleted=0", (run_id,)).fetchone()
+            if run is None:
+                raise KeyError(run_id)
+            self._require_idle(db, run["project_id"])
+            source = json.loads(run["source_status_json"])
+            retained_source = {"demo": source["demo"]} if "demo" in source else {}
+            db.execute("DELETE FROM captures WHERE run_id=?", (run_id,))
+            db.execute("DELETE FROM observations WHERE run_id=?", (run_id,))
+            db.execute("""UPDATE runs SET report_deleted=1,events_json='[]',counts_json='{}',
+                source_status_json=?,error=NULL WHERE id=?""", (_json(retained_source), run_id))
+            db.execute("INSERT OR IGNORE INTO artifact_cleanup VALUES(?)", (run_id,))
+            return run["project_id"]
+
+    def delete_project(self, project_id):
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            self._require_idle(db, project_id)
+            # Cleanup requests deliberately have no FK: they survive deletion
+            # and are retried after restart if filesystem removal is interrupted.
+            db.execute("INSERT OR IGNORE INTO artifact_cleanup SELECT id FROM runs WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM observations WHERE run_id IN (SELECT id FROM runs WHERE project_id=?)", (project_id,))
+            for table in ("captures", "generation_markers", "scan_schedules", "candidate_sources",
+                          "domain_enrichment", "domain_states", "inventory", "runs"):
+                db.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
+            db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+
+    def pending_artifact_cleanup(self):
+        with self._connection() as db:
+            return [row[0] for row in db.execute("SELECT run_id FROM artifact_cleanup")]
+
+    def finish_artifact_cleanup(self, run_id):
+        with self._connection(write=True) as db:
+            db.execute("DELETE FROM artifact_cleanup WHERE run_id=?", (run_id,))
+
     @staticmethod
     def _dns_workers(workers):
         if workers is not None and (not isinstance(workers, int) or isinstance(workers, bool) or not 1 <= workers <= 128):
@@ -402,6 +473,8 @@ class Store:
                    if interval else None)
         with self._connection(write=True) as db:
             self._require_project(db, project_id)
+            # Compatibility for callers using the former single schedule.
+            db.execute("DELETE FROM scan_schedules WHERE project_id=?", (project_id,))
             if discovery_mode == "cached" and not db.execute(
                     "SELECT 1 FROM inventory WHERE project_id=? AND kind='candidate' LIMIT 1", (project_id,)).fetchone():
                 raise ValueError("No saved candidate inventory yet. Run an enumeration scan first.")
@@ -411,20 +484,47 @@ class Store:
                 db.execute("UPDATE projects SET discovery_mode=? WHERE id=?", (discovery_mode, project_id))
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
+    def set_schedules(self, project_id, intervals, *, discovery_mode):
+        """Save both independent cadences and the manual scan's default mode."""
+        mode = self._discovery_mode(discovery_mode)
+        if set(intervals) != {"enumerate", "cached"}:
+            raise ValueError("Provide both enumeration and saved-inventory schedules.")
+        for value in intervals.values():
+            if (not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value)
+                    or (value != 0 and not 1 <= value <= 8760)):
+                raise ValueError("Each interval must be 0 (off) or between 1 and 8760 hours.")
+        moment = self._schedule_now()
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            for schedule_mode, interval in intervals.items():
+                old = db.execute("SELECT * FROM scan_schedules WHERE project_id=? AND discovery_mode=?",
+                                 (project_id, schedule_mode)).fetchone()
+                # Saving a new name/default mode must not postpone unchanged cadences.
+                next_at = (old["next_run_at"] if old and old["interval_hours"] == interval else
+                    (moment + timedelta(hours=interval)).isoformat(timespec="microseconds") if interval else None)
+                db.execute("INSERT OR REPLACE INTO scan_schedules VALUES(?,?,?,?)",
+                           (project_id, schedule_mode, float(interval), next_at))
+            db.execute("""UPDATE projects SET schedule_interval_hours=0,schedule_next_run_at=NULL,
+                discovery_mode=? WHERE id=?""", (mode, project_id))
+            return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+
     def due_projects(self, now=None):
         """Return due projects; queue acceptance must precede advance_schedule."""
         deadline = self._schedule_now(now).isoformat(timespec="microseconds")
         with self._connection() as db:
             db.execute("BEGIN")
-            rows = db.execute("""SELECT p.* FROM projects p WHERE p.schedule_interval_hours>0
-                AND p.schedule_next_run_at IS NOT NULL AND p.schedule_next_run_at<=?
+            rows = db.execute("""SELECT p.* FROM projects p WHERE (
+                (p.schedule_interval_hours>0 AND p.schedule_next_run_at IS NOT NULL AND p.schedule_next_run_at<=?)
+                OR EXISTS(SELECT 1 FROM scan_schedules s WHERE s.project_id=p.id AND s.interval_hours>0
+                    AND s.next_run_at<=? AND (s.discovery_mode='enumerate' OR EXISTS(
+                        SELECT 1 FROM inventory i WHERE i.project_id=p.id AND i.kind='candidate'))))
                 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.project_id=p.id AND r.status='running')
-                ORDER BY p.schedule_next_run_at,p.id""", (deadline,)).fetchall()
+                ORDER BY p.schedule_next_run_at,p.id""", (deadline, deadline)).fetchall()
             projects = [self._project(db, row) for row in rows]
             return [project for project in projects
                     if "demo" not in (project.get("last_run") or {}).get("source_status", {})]
 
-    def advance_schedule(self, project_id, now=None):
+    def advance_schedule(self, project_id, now=None, *, discovery_mode=None):
         """Advance after successful queue submission, without altering scan state.
 
         The worker serializes submission and this call. An unadvanced deadline
@@ -432,10 +532,21 @@ class Store:
         """
         with self._connection(write=True) as db:
             project = self._require_project(db, project_id)
-            interval = project["schedule_interval_hours"]
-            if not interval:
-                return self._project(db, project)
+            mode = self._discovery_mode(discovery_mode or project["discovery_mode"])
             moment = self._schedule_now(now)
+            schedules = db.execute("SELECT * FROM scan_schedules WHERE project_id=?", (project_id,)).fetchall()
+            if schedules:
+                for schedule in schedules:
+                    # Full enumeration includes the saved-inventory DNS/web work.
+                    # A cached scan must never defer the next enumeration.
+                    if schedule["interval_hours"] and (mode == "enumerate" or schedule["discovery_mode"] == mode):
+                        next_at = (moment + timedelta(hours=schedule["interval_hours"])).isoformat(timespec="microseconds")
+                        db.execute("UPDATE scan_schedules SET next_run_at=? WHERE project_id=? AND discovery_mode=?",
+                                   (next_at, project_id, schedule["discovery_mode"]))
+                return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
+            interval = project["schedule_interval_hours"]
+            if not interval or (mode == "cached" and project["discovery_mode"] == "enumerate"):
+                return self._project(db, project)
             next_at = (moment + timedelta(hours=interval)).isoformat(timespec="microseconds")
             db.execute("UPDATE projects SET schedule_next_run_at=? WHERE id=?", (next_at, project_id))
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
@@ -715,17 +826,24 @@ class Store:
 
     def get_run(self, run_id):
         with self._connection() as db:
-            return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
+            return self._run(db.execute("SELECT * FROM runs WHERE id=? AND report_deleted=0", (run_id,)).fetchone())
 
-    def list_runs(self, project_id, limit=None, include_events=True):
+    def list_runs(self, project_id, limit=None, include_events=True, *, offset=0):
         if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
             raise ValueError("Run limit must be a positive integer.")
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+            raise ValueError("Run offset must be a nonnegative integer.")
         columns = "*" if include_events else self._RUN_SUMMARY_COLUMNS
-        query = f"SELECT {columns} FROM runs WHERE project_id=? ORDER BY started_at DESC, rowid DESC"
+        query = f"SELECT {columns} FROM runs WHERE project_id=? AND report_deleted=0 ORDER BY started_at DESC, rowid DESC"
         parameters = [project_id]
         if limit is not None:
             query += " LIMIT ?"
             parameters.append(limit)
+        elif offset:
+            query += " LIMIT -1"
+        if offset:
+            query += " OFFSET ?"
+            parameters.append(offset)
         with self._connection() as db:
             self._require_project(db, project_id)
             return [self._run(row) for row in db.execute(query, parameters)]

@@ -336,7 +336,9 @@ def capture_stream(capture, domains_iterator, workdir):
                 except subprocess.TimeoutExpired:
                     pass
             if process.returncode and issue is None:
-                issue = f"Gowitness exited with code {process.returncode}; see gowitness.log."
+                issue = capture.exit_issue(workdir, process.returncode)
+            elif process.returncode:
+                issue = (issue or "") + " " + capture.exit_issue(workdir, process.returncode)
             if monitor is not None:
                 monitor.metrics["input_open"] = False
                 monitor.poll()

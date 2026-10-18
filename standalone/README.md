@@ -57,24 +57,40 @@ an empty Docker dashboard does not mean the native data was lost.
 deletes that profile's saved data. The main `monitor/` Compose profile uses a
 separate volume.
 
-Each client's project page can save its own scan interval or select manual/off.
-New clients follow the server default until their own schedule is saved. Explicit
-manual/off overrides a server-wide interval.
-These settings and the client's next due time persist in the named volume. Keep
-the server container running for schedules to execute. A manual scan advances
-the next due time; **Stop scan** stops the current attempt but leaves the future
-schedule enabled. Stopping restarts its interval from the cancellation time,
-preventing an overdue scan from immediately restarting. Disable the schedule
-separately when desired. Simulated demo projects are never automatically scanned.
+Each client's **Scan schedules** panel has independent intervals for **Full
+enumeration** and **Saved inventory**. Set full enumeration to **720 hours**
+(every 30 days) and saved inventory to **168 hours** (weekly), for example. Both
+check DNS again; saved inventory skips subdomain discovery and typo generation.
+Each accepts 0 (off) or 1–8760 hours. These are elapsed-hour intervals, not calendar
+month dates. Saved-inventory scheduling waits until the first accepted inventory.
 
-Choose **Use saved inventory** in the **Subdomains** selector beside **Start
-scan** to skip Amass, Subfinder, Assetfinder and typo generation. Saved candidates
-are queried again, including non-resolving ones; fresh DNS results still decide
-which websites qualify for capture. This choice needs an existing saved candidate
-inventory. **Enumerate again** refreshes discovery and generates only uncached
-seeds. **Default scan mode** under **Scan schedule** saves the project's choice
-for scheduled scans and preselects manual scans, including when scheduling is
-off. Each queued scan keeps its selected mode.
+When both are due, one full scan covers both. Starting a full scan advances both
+intervals; starting a saved-inventory scan advances only that interval. Weekly
+checks therefore do not postpone monthly enumeration. Existing single schedules
+keep working until you save the new form. **Turn both off** disables this client's
+automatic scans, including the server fallback. Due times persist in the volume;
+the server must stay online. **Stop scan** leaves future schedules enabled.
+
+Choose **Use saved inventory** beside **Start scan** for a manual scan that skips
+Amass, Subfinder, Assetfinder and generation but repeats DNS for every saved
+candidate, including negative/uncertain names. **Default for manual scans** saves
+the initial selection; each automatic cadence chooses its own mode. Every queued
+scan retains its mode and concurrency settings.
+
+Use **Manage project** on the client's page to rename or delete it. Finished scans
+have **Delete report** links in history and run details. Each deletion opens a
+confirmation page. Report deletion removes that run's observations, screenshots,
+reviews and logs while retaining current project inventory/DNS state, generation
+cache and minimal schedule/baseline bookkeeping. Project deletion removes all of
+that client's managed data and schedules. Stop any active scan and wait for its
+worker to finish first. Previously exported files elsewhere are separate. No data
+is deleted merely by rebuilding/upgrading.
+
+The supplied Compose mount explicitly allows execution from `/tmp`, needed for
+Gowitness/Rod's extracted Leakless helper. If an older container logged
+`fork/exec /tmp/leakless-...: permission denied`, recreate it with the updated
+Compose file. The unprivileged user, read-only image, dropped capabilities and
+`no-new-privileges` setting remain in place. See [mount options](https://docs.docker.com/engine/storage/tmpfs/#options-for---tmpfs).
 
 Choose **DNS concurrency** when creating a client, or save it on the client's page
 before starting a scan. Use 20 for up to 20 simultaneous DNS questions with MassDNS; the supported

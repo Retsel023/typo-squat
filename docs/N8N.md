@@ -4,12 +4,13 @@ Import [`workflows/n8n-visual-review.json`](../workflows/n8n-visual-review.json)
 
 n8n Cloud coordinates the work; the Python scanner and Linux tools run on your own Linux server, natively or in Docker. Docker packages the scanner; n8n schedules and connects services. The [Execute Command node is unavailable on n8n Cloud](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.executecommand/), so the workflow uses HTTP. The [standalone scanner and local review interface](../standalone/README.md) can be used without n8n.
 
-You can also schedule clients directly in the scanner UI. Per-client intervals
+You can also schedule clients directly in the scanner UI, with independent full
+enumeration and saved-inventory DNS/web cadences. Per-client intervals
 and next due times persist on the Linux scanner, and require its server to remain
 running. Choose one scheduling approach deliberately; enabling both a native
 client schedule and an n8n trigger can create separate scan attempts. Stopping a
 scanner run preserves its previous accepted results and leaves its future
-schedule unchanged; disable that schedule separately when needed.
+schedules enabled; disable them separately when needed.
 
 ## Connect the scanner
 

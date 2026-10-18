@@ -389,7 +389,7 @@ class GowitnessCapture:
                                            stdout=log, stderr=subprocess.STDOUT, shell=False, cwd=workdir,
                                            **({"on_tick": monitor.poll} if monitor is not None else {}))
                 if outcome.returncode:
-                    issue = f"Gowitness exited with code {outcome.returncode}; see gowitness.log."
+                    issue = self.exit_issue(workdir, outcome.returncode)
             except subprocess.TimeoutExpired:
                 issue = "Gowitness capture exceeded its deadline; completed artifacts were retained. See gowitness.log."
             self._check_shutdown()
@@ -415,6 +415,21 @@ class GowitnessCapture:
             stage = self._stage(results, detail, failed=True, version=detected_version)
             _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
             return results, stage
+
+    @staticmethod
+    def exit_issue(workdir, returncode):
+        detail = f"Gowitness exited with code {returncode}; see gowitness.log."
+        try:
+            with (Path(workdir) / "gowitness.log").open("rb") as log:
+                log.seek(0, 2)
+                log.seek(max(0, log.tell() - 16384))
+                tail = log.read(16384).decode("utf-8", errors="replace").lower()
+            if "leakless" in tail and "permission denied" in tail:
+                detail += (" Its Leakless browser helper was denied execution. A noexec /tmp mount can cause this; "
+                           "recreate the container with the updated Compose /tmp:rw,exec,nosuid,nodev,mode=1777 mount.")
+        except OSError:
+            pass
+        return detail
 
     def capture_stream(self, domains_iterator, workdir):
         """Capture qualified endpoints while a producer supplies resolving domains.

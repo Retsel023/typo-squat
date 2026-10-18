@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block title %}Delete {{ 'scan report' if report else 'project' }}{% endblock %}
+{% block breadcrumb %}<a href="{{ url_for('project_detail', project_id=project.id) }}">{{ project.name }}</a><span>/</span> Delete {{ 'report' if report else 'project' }}{% endblock %}
+{% block content %}
+  <div class="page-heading"><div><a class="back-link" href="{{ url_for('project_detail', project_id=project.id) }}">← {{ project.name }}</a><h1>Delete {{ 'scan report' if report else 'project' }}?</h1><p>{{ project.name }} · {{ project.roots|join(' · ') }}</p></div></div>
+  <section class="panel delete-panel">
+    {% if report %}
+      <h2>Scan from {{ report.started_at|date }}</h2><p class="small muted">Report ID: {{ report.id }}</p>
+      <p>This permanently removes this report's observations, change log, screenshots, AI reviews and tool logs.</p>
+      <p>The project keeps its domain inventory, current DNS state, generation cache and schedules. Minimal scan bookkeeping is retained so deleting a report cannot reset the baseline or schedule.</p>
+      <p>Other reports lose access to comparison images stored in this report. Future captures compare with the most recent retained image, or start a new image history if none remain.</p>
+    {% else %}
+      <h2>{{ project.name }}</h2><p>This permanently removes the project, its schedules, saved domain inventory, DNS state, reports, screenshots, AI reviews and logs.</p>
+    {% endif %}
+    <p>Files you previously exported elsewhere are managed separately. This action cannot be undone.</p>
+    {% if blocker %}<div class="notice info" role="status">{{ blocker }} <a href="{{ url_for('project_detail', project_id=project.id) }}">Return to the project →</a></div>{% endif %}
+    <form method="post" class="delete-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label for="delete-confirmation">Type DELETE to confirm</label>
+      <input id="delete-confirmation" name="confirmation" pattern="DELETE" required autocomplete="off" spellcheck="false"{% if blocker %} disabled{% endif %}>
+      <div class="heading-actions"><button class="button danger" type="submit"{% if blocker %} disabled{% endif %}>Delete {{ 'report' if report else 'project' }} permanently</button><a class="button secondary" href="{{ url_for('run_detail', run_id=report.id) if report else url_for('project_detail', project_id=project.id) }}">Cancel</a></div>
+    </form>
+  </section>
+{% endblock %}
