@@ -192,7 +192,9 @@ def report_entries(captures, mode="changes"):
     entries = []
     for capture in captures:
         probe = capture.get("preflight", {})
-        if mode == "changes" and probe.get("skip_reason") in {"title_rule", "unchanged_title", "unchanged_content"}:
+        if probe.get("skip_reason") == "title_rule" or probe.get("report_exclusion") == "browser_title_rule":
+            continue
+        if mode == "changes" and probe.get("skip_reason") in {"unchanged_title", "unchanged_content"}:
             continue
         change = probe.get("web_change")
         label = CHANGE_LABELS.get(change)

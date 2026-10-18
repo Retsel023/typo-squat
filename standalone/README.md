@@ -219,18 +219,26 @@ Exclusion rules are off by default. Website checks reuse the GET, reading
 up to 64 KiB of HTML in title-only mode or 512 KiB in default text mode, following at most three redirects within
 the probe's timeout budget. They use the same website proxy as Gowitness.
 
-Only complete titles on final 2xx responses can skip a screenshot. Missing or
-unreadable titles and HTTP errors still reach Gowitness. JavaScript-only titles
-need the browser. Original roots and discovered source subdomains bypass title
-exclusions to preserve references. Excluded endpoints keep their DNS inventory,
-title, reason and whether the rule was global or project-specific; later scans
-check them again. Previous images remain saved.
-The run report counts title exclusions separately from failures; excluded
-entries do not enter the AI text review queue. Use specific phrases: titles alone do
-not establish whether a site is safe. Changes apply to newly queued manual and
-scheduled scans. Each run saves both lists when queued and displays those
-rules in scan details. Queued/running scans keep their original settings.
-Title comparisons continue when both exclusion lists are off.
+Complete HTML titles are matched as case-insensitive literal substrings on
+any HTTP status, including errors. `godaddy` therefore matches titles containing
+`GoDaddy`. Full capture/report does not bypass exclusions. Original roots and
+discovered source subdomains still bypass them so reference captures remain
+available.
+
+HTML and browser requests use the same user-agent, and bounded gzip/deflate
+HTML decoding is supported. Missing or unreadable HTML titles still reach the
+browser. A JavaScript/browser title can differ from the original HTML title.
+The returned Gowitness title is checked again: matches are excluded from both
+report modes, the normal gallery and AI, but the already-captured file remains
+in history. Seeing a first capture in the Gowitness log is therefore possible
+when only the browser reveals the matching title. Counts distinguish skips
+before Gowitness from exclusions after browser capture.
+
+Title-filter decisions, matched phrases and global/project scope are saved with
+the observations. DNS inventory remains intact and future scans check it again.
+Changing rules affects newly queued manual/scheduled scans, not a scan already
+running. Run details show its saved rule list. Title comparisons continue when
+both exclusion lists are off.
 
 Routine scans default to **Changes only**. Every run refreshes DNS and
 HTTP/HTTPS checks; subdomain enumeration is independent. The project

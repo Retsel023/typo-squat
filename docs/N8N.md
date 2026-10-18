@@ -71,6 +71,12 @@ HTTP/HTTPS evidence is deduplicated only within the same hostname, with matching
 current and previous content/title histories; different pages remain separate.
 No cross-domain deduplication hides distinct domains.
 
+Full capture mode respects global/project title exclusions too. Complete HTML
+titles can exclude on any HTTP status. Gowitness titles are checked again after
+capture; browser-only matches stay out of the AI queue and reports, while their
+already-captured files remain in local history. A browser-only title cannot
+prevent that first browser visit. Rules are the saved snapshot from queue time.
+
 With AI enabled, one selected pair at a time includes:
 
 - Up to 8,000 current text characters, title and sampled form/link details.

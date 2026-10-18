@@ -4,6 +4,15 @@ Gowitness screenshots support visual review of currently resolving candidates. E
 
 The preflight reuses a lightweight streamed GET for bounded static title/text extraction (up to 512 KiB of HTML and 12,000 text characters in default text mode; 64 KiB in title-only mode). Redirects and error responses such as 403, 404 and 500 still count as web responses; requiring HTTP 200 or using only HEAD would miss real sites. Static checks follow at most three HTTP redirects within the same timeout budget; the browser independently follows redirects when capture is needed. Checks use bounded parallel workers and a configurable `--web-timeout` (default 3 seconds). A certificate error triggers a second check within the remaining timeout budget, retaining the TLS diagnostic; this is evidence collection without login credentials. A timeout is uncertain, not proof that no website exists. `preflight.json` retains per-endpoint diagnostics. Checks run again on every scan, including previously unreachable endpoints.
 
+Global/project title exclusions apply to both full and change-only scans. A
+matching complete HTML title skips Gowitness even on HTTP error responses.
+Bounded gzip/zlib-deflate decoding and a shared browser user-agent improve the
+pre-browser check. Rendered Gowitness titles are checked again after capture;
+those matches are excluded from reports, the normal gallery and AI, while the
+already-created image remains in manual history. Pre-browser skips and
+post-capture exclusions have separate counts. Missing/unreadable titles remain
+eligible, and original references bypass title exclusions.
+
 The adapter supports [Gowitness 3.2.2](https://github.com/sensepost/gowitness/releases/tag/3.2.2) and checks `gowitness version` before capture. Chrome or Chromium must already be installed or supplied through `chrome_path`. Recognized browser commands include Chromium, Google Chrome, and `google-chrome-unstable`; the explicit browser path is always passed to Gowitness. The adapter does not request a browser download or reuse a logged-in browser profile.
 
 The [pinned CLI](https://github.com/sensepost/gowitness/blob/3.2.2/cmd/scan.go) is invoked with `scan file`, PNG filesystem output, `--write-jsonl`, an explicit JSONL destination, bounded threads, scan-error logging, and HTML/network-body collection disabled. A global subprocess deadline and cooperative cancellation bound the batch. Input contains `http://domain:80` and `https://domain:443`. Explicit ports matter because the [file reader](https://github.com/sensepost/gowitness/blob/3.2.2/pkg/readers/file.go) otherwise expands the default port list even when a scheme was supplied.

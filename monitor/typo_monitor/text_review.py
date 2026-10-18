@@ -24,7 +24,7 @@ def review_selection(store, run_id, *, include_parked=False, include_reviewed=Fa
         key = (domain, probe.get("content_sha256"), probe.get("title"),
                probe.get("previous_content_sha256"), probe.get("previous_title"), change)
         reason = ("original" if domain in originals else
-                  "title_filtered" if probe.get("skip_reason") == "title_rule" else
+                  "title_filtered" if probe.get("skip_reason") == "title_rule" or probe.get("report_exclusion") == "browser_title_rule" else
                   "unchanged" if change == "unchanged" else
                   "uncertain" if not text_complete(probe) or change not in (NEW | CHANGED) else
                   "parked" if not include_parked and (states[domain].get("parking") or {}).get("status") == "likely_parked" else

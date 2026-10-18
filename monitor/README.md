@@ -154,8 +154,8 @@ by duplicating monitor containers on one shared data volume.
 Before Gowitness, lightweight HTTP and HTTPS checks test each resolving domain
 on ports 80 and 443. Only responding endpoints reach the browser. Any HTTP
 status qualifies, including redirects, 403 and 404; timeouts remain uncertain.
-Use `--web-timeout` to change the 3-second check timeout. Probe concurrency uses
-the run's DNS concurrency setting, independently of the 4 browser workers. Results are
+Use `--web-timeout` to change the 3-second check timeout. HTTP/text and browser concurrency have their own project settings, independent
+of DNS concurrency. Results are
 saved in `preflight.json` and refreshed on every run. Domains without a responding
 website remain in DNS inventory, with compact status rows instead of empty
 screenshot frames. An older saved screenshot is explicitly labelled as previous.
@@ -170,22 +170,39 @@ projects, so they survive container recreation with the data volume retained.
 
 Enable a list and save specific, case-insensitive literal phrases such as
 `GoDaddy` or a particular station name, one per line. The existing GET preflight reads
-at most 64 KiB of uncompressed HTML in title-only mode, stopping after the title or head. The default text mode reads up to 512 KiB for normalized content. It follows
+at most 64 KiB of decoded HTML in title-only mode, stopping after the title or head. The default text mode reads up to 512 KiB for normalized content. It follows
 at most three HTTP redirects within the probe's timeout budget and uses the
 same configured website proxy. This adds a bounded body read and possibly
 redirect requests; it does not launch curl or another browser.
 
-Only a complete title from a final 2xx response can exclude that protocol's new
-screenshot. Missing, incomplete, encoded or unreadable titles, HTTP error
-responses and title-read failures keep the endpoint eligible. JavaScript-only
-titles require the browser and cannot be used for this prefilter. Owned roots
-and discovered source subdomains bypass title exclusions so reference captures
-remain available. HTTP and HTTPS are evaluated independently.
+A complete HTML title is matched case-insensitively as a literal substring on
+**any HTTP status**, including errors. Full capture/report and change-only scans
+respect the same exclusions. Enabled rules are snapshotted when a scan is
+queued, so changing a list does not alter an already running scan.
+
+The HTML check and Gowitness now use the same user-agent. Identity, gzip and
+zlib-wrapped deflate HTML are read incrementally with limits on decoded bytes
+and compressed input; unsupported or invalid encoding remains uncertain. The
+existing timeout and redirect limits still apply. Missing/incomplete titles
+remain browser-eligible. The static HTML title can differ from the rendered
+browser title because of redirects, JavaScript, cookies or server responses.
+
+After Gowitness returns successful page metadata, its title is checked against
+the same saved rule list. A match is explicitly **excluded after browser title
+check**, omitted from both full and change-only reports, hidden from the normal
+gallery and excluded from AI. This does not retroactively prevent the first
+capture: its file/status remain in capture history. Run counts distinguish
+pre-browser skips from browser-title matches. Static filter metadata records
+`disabled`, `original_reference`, `title_unavailable`, `no_match` or `matched`.
+The rendered check records its own source, matching phrase and rule scope.
+
+Owned roots and discovered source subdomains continue to bypass title exclusions
+so original references remain available. HTTP/HTTPS are evaluated independently.
 
 An excluded endpoint retains its DNS records, title, matched phrase, global or
-project rule origin and check details in `preflight.json`, saved capture metadata
-and reports. The run counts
-title exclusions separately, including in the AI handoff preview; excluded
+project rule origin and check details. HTML decisions appear in `preflight.json`;
+both HTML/browser decisions are saved in capture metadata. Run reports and the
+AI handoff preview count exclusions separately; excluded
 captures send no candidate text to n8n. Existing historical screenshots are retained.
 Every later scan checks the title again, so this is not a permanent domain
 blacklist. Rules are a capture preference, not a benign-site classification:

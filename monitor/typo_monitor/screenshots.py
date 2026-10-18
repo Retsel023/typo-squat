@@ -12,8 +12,8 @@ import subprocess
 
 from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
-from .website_probe import WebsiteProbe
-from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, matching_rule, rule_scope
+from .website_probe import WebsiteProbe, BROWSER_USER_AGENT
+from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, filter_decision
 from .page_text import MAX_BODY_BYTES, MAX_TEXT_CHARS, TEXT_STATUSES
 
 
@@ -122,10 +122,12 @@ def _apply_preflight(capture, row, diagnostic, domain):
         row.update(status="skipped", error=error if error.startswith(prefix) else prefix + error,
                    captured_at=diagnostic["checked_at"])
         return False
-    rule = matching_rule(diagnostic, getattr(capture, "title_filter", {}),
-                         original=domain in getattr(capture, "original_domains", set()))
+    decision = filter_decision(diagnostic, getattr(capture, "title_filter", {}),
+                               original=domain in getattr(capture, "original_domains", set()))
+    diagnostic["title_filter"] = decision
+    rule = decision["matched_rule"]
     if rule:
-        scope = rule_scope(rule, getattr(capture, "title_filter", {}))
+        scope = decision["scope"]
         diagnostic.update(skip_reason="title_rule", matched_rule=rule, rule_scope=scope,
                           capture_decision="skip", capture_reason="title_rule")
         row.update(status="skipped", error=f"Screenshot excluded by title rule: {rule} ({scope})",
@@ -166,7 +168,7 @@ def _image_path(workdir, filename):
     return resolved.relative_to(workdir).as_posix()
 
 
-def _validate_metadata(metadata, workdir, requested, check_shutdown):
+def _validate_metadata(metadata, workdir, requested, check_shutdown, *, title_filter=None, original_domains=()):
     """Select only requested, unique results with safe verified image artifacts."""
     malformed, foreign, duplicates = 0, 0, set()
     records = {}
@@ -220,6 +222,16 @@ def _validate_metadata(metadata, workdir, requested, check_shutdown):
         if row["http_status"] is None:
             row["error"] = "Gowitness metadata has no valid HTTP response code."
             continue
+        # This title is only known after Chromium has run. Do not pretend its
+        # screenshot was prevented, or delete already captured evidence.
+        domain = url.split("://", 1)[1].rsplit(":", 1)[0]
+        rendered = {"title": row["title"], "title_status": "found" if row["title"] else "missing"}
+        decision = filter_decision(rendered, title_filter or {}, original=domain in original_domains)
+        decision["source"] = "browser"
+        probe = row.setdefault("preflight", {})
+        probe["browser_title_filter"] = decision
+        if decision["matched_rule"]:
+            probe["report_exclusion"] = "browser_title_rule"
         try:
             relative_path = _image_path(workdir, record.get("file_name"))
         except (OSError, ValueError) as error:
@@ -345,9 +357,9 @@ class GowitnessCapture:
         self.cancel_event = None
 
     def performance_arguments(self):
-        """The streamed and DNS-first browser paths use the same limits."""
+        """The streamed and DNS-first paths use identical browser settings."""
         return ["--threads", str(self.threads), "--timeout", str(self.page_timeout),
-                "--delay", str(self.screenshot_delay)]
+                "--delay", str(self.screenshot_delay), "--chrome-user-agent", BROWSER_USER_AGENT]
 
     def performance_metrics(self):
         return {"browser_workers": self.threads, "page_timeout_seconds": self.page_timeout,
@@ -367,12 +379,15 @@ class GowitnessCapture:
         title_filtered = sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows)
         title_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for row in rows)
         text_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for row in rows)
+        browser_filtered = sum(row.get("preflight", {}).get("report_exclusion") == "browser_title_rule" for row in rows)
         if title_filtered:
             detail += f" {title_filtered} endpoints excluded by configured title phrases; DNS inventory was retained."
         if title_unchanged:
             detail += f" {title_unchanged} endpoints had unchanged titles and did not request screenshots."
         if text_unchanged:
             detail += f" {text_unchanged} endpoints had unchanged page text and did not request screenshots."
+        if browser_filtered:
+            detail += f" {browser_filtered} browser-title matches excluded from reports/AI after capture; any captured files retained in history."
         return {"status": "failed" if failed else "partial" if issue or unsuccessful or counts["unknown"] else "ok",
                 "detail": detail, "version": version, "required_version": SUPPORTED_VERSION,
                 "attempts": len(rows), "captured": captured,
@@ -380,6 +395,7 @@ class GowitnessCapture:
                 "unavailable": sum(row["status"] == "unavailable" for row in rows),
                 "eligible": counts["http_response"] - title_filtered - title_unchanged - text_unchanged,
                 "title_filtered": title_filtered,
+                "browser_title_filtered": browser_filtered,
                 "title_unchanged": title_unchanged,
                 "text_unchanged": text_unchanged,
                 "titles_found": sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),
@@ -496,7 +512,8 @@ class GowitnessCapture:
             self._check_shutdown()
             if monitor is not None:
                 monitor.poll()
-            malformed, foreign, duplicates = _validate_metadata(metadata, workdir, requested, self._check_shutdown)
+            malformed, foreign, duplicates = _validate_metadata(metadata, workdir, requested, self._check_shutdown,
+                title_filter=getattr(self, "title_filter", {}), original_domains=getattr(self, "original_domains", set()))
             detail = f"Captured {sum(row['status'] == 'captured' for row in requested.values())} of {len(requested)} HTTP-responsive endpoints; other attempts were skipped by preflight."
             if issue:
                 detail += " " + issue

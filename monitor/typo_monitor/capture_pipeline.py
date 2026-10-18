@@ -358,7 +358,8 @@ def capture_stream(capture, domains_iterator, workdir):
                 monitor.metrics["input_open"] = False
                 monitor.poll()
         queued = {url: row for url, row in requested.items() if row.get("capture_queued")}
-        malformed, foreign, duplicates = _validate_metadata(metadata, workdir, queued, capture._check_shutdown)
+        malformed, foreign, duplicates = _validate_metadata(metadata, workdir, queued, capture._check_shutdown,
+            title_filter=getattr(capture, "title_filter", {}), original_domains=getattr(capture, "original_domains", set()))
         detail = (f"Captured {sum(row['status'] == 'captured' for row in requested.values())} of "
                   f"{len(requested)} HTTP-responsive endpoints using one streamed Gowitness process.")
         if issue:

@@ -183,6 +183,7 @@ class CaptureOverlap:
                      eligible=sum(row.get("preflight", {}).get("status") == "http_response"
                                   and row.get("preflight", {}).get("skip_reason") not in {"title_rule", "unchanged_title", "unchanged_content"} for row in rows),
                      title_filtered=sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows),
+                     browser_title_filtered=sum(row.get("preflight", {}).get("report_exclusion") == "browser_title_rule" for row in rows),
                      text_unchanged=sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for row in rows),
                      title_unchanged=sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for row in rows),
                      titles_found=sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),

@@ -918,6 +918,7 @@ class Store:
                      for domain, attempt in attempts])
                 counts["screenshots_total"] = len(attempts)
                 counts["screenshots_title_filtered"] = sum(attempt["preflight"].get("skip_reason") == "title_rule" for _, attempt in attempts)
+                counts["screenshots_browser_title_filtered"] = sum(attempt["preflight"].get("report_exclusion") == "browser_title_rule" for _, attempt in attempts)
                 counts["screenshots_text_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_content" for _, attempt in attempts)
                 counts["screenshots_title_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_title" for _, attempt in attempts)
                 for capture_status in ("captured", "failed", "unavailable", "skipped"):

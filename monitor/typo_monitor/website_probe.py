@@ -16,6 +16,10 @@ from .concurrency import bounded_map
 from .adapters import _report_progress
 
 LOG = logging.getLogger(__name__)
+# Match the pinned Gowitness browser request identity so the preliminary title
+# check is less likely to receive a different page solely because of its UA.
+BROWSER_USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
 
 
 def _name_resolution_error(error):
@@ -63,7 +67,7 @@ class WebsiteProbe:
             proxy_url = getattr(self, "proxy_url", None)
             if proxy_url:
                 session.proxies = {"http": proxy_url, "https": proxy_url}
-            session.headers["User-Agent"] = "TypoMonitor-WebsitePreflight/1"
+            session.headers["User-Agent"] = BROWSER_USER_AGENT
             collect_text = bool(getattr(self, "collect_text", False))
             collect_titles = bool(getattr(self, "collect_titles", False) or collect_text)
             if collect_titles:

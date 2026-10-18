@@ -99,9 +99,14 @@ def _has_capture_image(capture):
 
 
 def _saved_capture(attempt):
+    probe = attempt.get("preflight", {}) if isinstance(attempt, dict) else {}
+    if probe.get("skip_reason") == "title_rule" or probe.get("report_exclusion") == "browser_title_rule":
+        return None
     if _has_capture_image(attempt):
         return attempt
     previous = attempt.get("previous_capture") if isinstance(attempt, dict) else None
+    if previous and previous.get("preflight", {}).get("report_exclusion") == "browser_title_rule":
+        return None
     if (_has_capture_image(previous) and previous.get("domain") == attempt.get("domain")
             and previous.get("scheme") == attempt.get("scheme") and previous.get("project_id") == attempt.get("project_id")):
         return previous
@@ -112,6 +117,8 @@ def _capture_status(attempt):
     if not attempt:
         return "No screenshot"
     error = str(attempt.get("error") or "").strip().lower()
+    if (attempt.get("preflight") or {}).get("report_exclusion") == "browser_title_rule":
+        return "Excluded after browser title check"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_content":
         return "Text unchanged · capture skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_title":
@@ -398,7 +405,7 @@ def create_app(service):
             if isinstance(analysis, dict) and analysis:
                 assessments.append({"scheme": capture.get("scheme", ""), "analysis": analysis,
                                     "captured_at": capture.get("captured_at")})
-            if not _has_capture_image(capture):
+            if not _has_capture_image(capture) or _saved_capture(capture) is None:
                 continue
             previous = service.store.previous_successful_capture(capture["run_id"], domain, capture["scheme"])
             if _has_capture_image(previous):

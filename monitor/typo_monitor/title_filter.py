@@ -87,8 +87,8 @@ class _Title(HTMLParser):
 def inspect_title(response, session, deadline, check_cancel, *, collect_text=False):
     """Reuse the open response, with at most three extra redirect requests.
 
-    A failed title lookup never retracts the initial HTTP response. Compressed
-    bodies are not decoded here, avoiding unbounded inflation before the byte cap.
+    A failed title lookup never retracts the initial HTTP response. Supported
+    compression is decoded incrementally within the existing HTML byte limit.
     """
     result = {"title": None, "title_status": "missing", "title_url": response.url,
               "title_http_status": response.status_code, "title_bytes": 0,
@@ -154,8 +154,11 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                 content_type = current.headers.get("Content-Type", "").lower()
                 if content_type and content_type.split(";", 1)[0].strip() not in {"text/html", "application/xhtml+xml"}:
                     return failed("non_html")
-                if current.headers.get("Content-Encoding", "identity").strip().lower() not in {"", "identity"}:
+                encoding = current.headers.get("Content-Encoding", "identity").strip().lower()
+                if encoding not in {"", "identity", "gzip", "x-gzip", "deflate"}:
                     return failed("encoded")
+                from .html_body import HtmlBody
+                body = HtmlBody(current.raw, encoding, remaining)
                 charset = re.search(r"charset\s*=\s*[\"']?([^;\s\"']+)", content_type)
                 try:
                     decoder = codecs.getincrementaldecoder(charset.group(1) if charset else "utf-8-sig")("replace")
@@ -168,7 +171,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                     parser, limit = PageText(title_parser, current.url), MAX_BODY_BYTES
                 while result["title_bytes"] < limit and not parser.done:
                     remaining()
-                    chunk = current.raw.read1(min(4096, limit - result["title_bytes"]), decode_content=False)
+                    chunk = body.read(min(4096, limit - result["title_bytes"]))
                     remaining()
                     if not chunk:
                         parser.feed(decoder.decode(b"", final=True))
@@ -192,8 +195,17 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
 
 
 def matching_rule(diagnostic, policy, *, original=False):
-    if (original or not policy.get("enabled") or diagnostic.get("title_status") != "found"
-            or not 200 <= (diagnostic.get("title_http_status") or 0) < 300):
+    if original or not policy.get("enabled") or diagnostic.get("title_status") != "found":
         return None
     title = (diagnostic.get("title") or "").casefold()
     return next((rule for rule in policy.get("rules", []) if rule.casefold() in title), None)
+
+
+def filter_decision(diagnostic, policy, *, original=False):
+    """Explain intentional bypasses separately from a literal non-match."""
+    rule = matching_rule(diagnostic, policy, original=original)
+    status = ("disabled" if not policy.get("enabled") else "original_reference" if original else
+              "title_unavailable" if diagnostic.get("title_status") != "found" else
+              "matched" if rule else "no_match")
+    return {"status": status, "source": "html", "matched_rule": rule,
+            "scope": rule_scope(rule, policy) if rule else None}
