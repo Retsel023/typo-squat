@@ -165,7 +165,7 @@ phrases of 120 characters. Global settings persist in the same database as your
 projects, so they survive container recreation with the data volume retained.
 
 Enable a list and save specific, case-insensitive literal phrases such as
-`GoDaddy` or a particular station name, one per line. With it enabled, the existing GET preflight reads
+`GoDaddy` or a particular station name, one per line. The existing GET preflight reads
 at most 64 KiB of uncompressed HTML, stopping after the title or head. It follows
 at most three HTTP redirects within the probe's timeout budget and uses the
 same configured website proxy. This adds a bounded body read and possibly
@@ -189,7 +189,50 @@ a malicious site can copy any title. Keep rules specific or leave the filter
 off when you need complete visual evidence. Settings are snapshotted when a run
 is queued and apply to both manual and scheduled scans. Each run displays its
 saved rules from both scopes; later edits do not rewrite past reports or alter
-queued/running scans. Disabling both lists restores the header-only preflight.
+queued/running scans. Title comparisons continue when both exclusion lists are off.
+
+### Change-only screenshots and reports
+
+New scans default to **Changes only**, independently of subdomain enumeration.
+The scanner still refreshes DNS and HTTP/HTTPS observations every run. It
+compares each complete static HTML title with the previous accepted run for
+that same hostname and protocol. Whitespace is normalized; title comparisons
+are case-sensitive. Initial/final HTTP status, redirect destination and TLS
+verification state must also match before a capture can be skipped.
+
+Skipping requires a previously successful image with matching title/endpoint
+metadata still on disk, a successful or intentionally unchanged previous check,
+and the same configured website proxy endpoint. Missing baselines, uncertain
+titles, HTTP errors, failed earlier captures, changed endpoints and newly
+responsive websites reach Gowitness. Older reports without comparable HTML
+titles need a fresh capture baseline. A deleted baseline is captured again.
+There is no screenshot copied or attached to an unchanged entry in the new run.
+
+Open **Latest report** or a scan in history for its **Website changelog**:
+before/after titles, first observations, endpoint/availability changes and
+new/changed images captured in that run. Unchanged and explicitly excluded
+endpoints are omitted. DNS changes remain in the report's separate observed
+changes section; registration or purchase is not inferred. Failed/uncertain
+checks stay in source health and saved metadata without inventing changes.
+The project inventory remains available as the complete historical view.
+
+The project **Screenshot and report policy** sets a manual default and a
+periodic recapture age (30 days by default; 0 disables it, maximum 365). Pages
+can change while retaining their titles. Periodic captures can detect such
+visual changes; identical images stay out of the changelog and AI queue.
+Select **Full capture / report** for all eligible endpoints and current-run
+images, still respecting global/project title exclusions. Each independent
+enumeration/cached schedule has its own screenshot/report mode. For example,
+enumerate and fully capture monthly, but check saved inventory with a changelog
+weekly. If both schedules are due, enumeration uses full capture if either
+requires it. A change-only enumeration cannot postpone a full capture cadence.
+Settings are snapshotted at queue time.
+
+Native scans accept `scan --capture-mode changes` or `scan --capture-mode full`;
+the API accepts `capture_mode` independently of `discovery_mode` in `/api/scans`.
+Unchanged-title skips send no candidate images to n8n. An unchanged owned source
+can supply its dated historical image as a reference for a changed candidate;
+it is never inserted into the new website report.
 
 With MassDNS, a domain enters this pipeline only after all its A, AAAA and
 CNAME questions have completed and its positive result is validated. A bounded

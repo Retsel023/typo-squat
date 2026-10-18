@@ -205,7 +205,7 @@ Global settings persist in the data volume alongside project settings.
 Enable the option, enter specific title phrases such as `GoDaddy` or a station
 name (one per line), and save before
 starting a scan. Matching ignores case and checks HTTP and HTTPS independently.
-The feature is off by default. Enabled checks reuse the website GET, reading
+Exclusion rules are off by default. Website checks reuse the GET, reading
 up to 64 KiB of uncompressed HTML and following at most three redirects within
 the probe's timeout budget. They use the same website proxy as Gowitness.
 
@@ -220,7 +220,30 @@ is sent for them in the n8n review queue. Use specific phrases: titles alone do
 not establish whether a site is safe. Changes apply to newly queued manual and
 scheduled scans. Each run saves both lists when queued and displays those
 rules in scan details. Queued/running scans keep their original settings.
-Turning both lists off restores the header-only check.
+Title comparisons continue when both exclusion lists are off.
+
+Routine scans now default to **Changes only**. They compare static HTML titles
+against the previous accepted run, separately for HTTP and HTTPS. An unchanged
+title and matching HTTP endpoint can skip Gowitness when its matching successful
+image baseline is still available. Missing/uncertain titles, missing baselines,
+prior capture failures, changed titles/endpoints and new websites still reach
+the browser. Existing reports without static title data need a fresh baseline.
+
+Use **Latest report** for the website changelog: it shows new or changed
+observations, before/after titles and only images actually captured in that run.
+Unchanged sites do not repeat old screenshots. DNS changes have their own
+section; a change is not proof of a domain purchase. The complete project
+inventory and prior reports stay available separately.
+
+Choose **Full capture / report** beside **Start scan** for all eligible endpoints.
+It is independent of enumeration. The **Screenshot and report policy** panel
+sets the manual default and a periodic recapture age: 30 days by default,
+0 to disable, up to 365. A page can change without changing its title; periodic
+or full captures can detect that, while identical images stay out of change
+reports and the AI queue. Both schedule cards have a screenshot/report selector,
+so monthly enumeration/full capture can accompany weekly cached/changelog runs.
+Queued and running scans retain their saved policy. Global/project exclusion
+phrases apply in both modes.
 
 MassDNS can feed this work before its bulk DNS job finishes. A domain is offered
 only after its A, AAAA and CNAME questions are complete and the positive result

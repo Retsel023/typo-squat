@@ -14,7 +14,7 @@
       <p class="schedule-server-note">Enabled global and project phrases are combined, with duplicates removed. Project switches control only that project's additional phrases. Global rules also apply to new projects and scheduled scans. Changes affect scans queued afterward; queued and running scans keep their saved rules.</p>
       <p class="schedule-server-note">Excluded sites retain their DNS records, title and matched rule. Every scan checks them again. HTTP and HTTPS are checked independently; original-domain references bypass exclusions. Missing or unreadable titles and HTTP error responses remain eligible for capture. A matching title does not establish that a site is safe.</p>
       <button class="button secondary" type="submit">Save global exclusions</button>
-      <p class="field-help">Off by default. Turning this off retains your saved phrases. If a project has no enabled rules either, its preflight returns to header-only checks.</p>
+      <p class="field-help">Off by default. Turning this off retains your saved phrases. Title comparisons continue when exclusions are off.</p>
     </form>
   </section>
 {% endblock %}

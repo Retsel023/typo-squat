@@ -89,6 +89,8 @@ def _validated_preflight(diagnostics, requested):
 def _apply_preflight(capture, row, diagnostic, domain):
     """Return whether a responsive endpoint should enter the browser queue."""
     row.update(preflight=diagnostic, title=diagnostic.get("title"), http_status=diagnostic.get("http_status"))
+    from .capture_changes import compare
+    unchanged = compare(capture, domain, row, diagnostic)
     if diagnostic["status"] != "http_response":
         prefix = "Website check uncertain: " if diagnostic["status"] == "unknown" else "No HTTP response: "
         error = diagnostic["error"]
@@ -101,6 +103,10 @@ def _apply_preflight(capture, row, diagnostic, domain):
         scope = rule_scope(rule, getattr(capture, "title_filter", {}))
         diagnostic.update(skip_reason="title_rule", matched_rule=rule, rule_scope=scope)
         row.update(status="skipped", error=f"Screenshot excluded by title rule: {rule} ({scope})",
+                   captured_at=diagnostic["checked_at"])
+        return False
+    if unchanged:
+        row.update(status="skipped", error="Title unchanged; no new screenshot requested.",
                    captured_at=diagnostic["checked_at"])
         return False
     return True
@@ -318,15 +324,19 @@ class GowitnessCapture:
         counts = {status: sum(row.get("preflight", {}).get("status") == status for row in rows)
                   for status in ("http_response", "no_http_response", "unknown")}
         title_filtered = sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows)
+        title_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for row in rows)
         if title_filtered:
             detail += f" {title_filtered} endpoints excluded by configured title phrases; DNS inventory was retained."
+        if title_unchanged:
+            detail += f" {title_unchanged} endpoints had unchanged titles and did not request screenshots."
         return {"status": "failed" if failed else "partial" if issue or unsuccessful or counts["unknown"] else "ok",
                 "detail": detail, "version": version, "required_version": SUPPORTED_VERSION,
                 "attempts": len(rows), "captured": captured,
                 "failed": sum(row["status"] == "failed" for row in rows),
                 "unavailable": sum(row["status"] == "unavailable" for row in rows),
-                "eligible": counts["http_response"] - title_filtered,
+                "eligible": counts["http_response"] - title_filtered - title_unchanged,
                 "title_filtered": title_filtered,
+                "title_unchanged": title_unchanged,
                 "titles_found": sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),
                 "launched": sum(row.get("capture_queued", False) for row in rows),
                 "skipped": sum(row["status"] == "skipped" for row in rows),
@@ -369,7 +379,7 @@ class GowitnessCapture:
             probe.run_id = getattr(self, "run_id", "manual")
             probe.progress_callback = callback
             probe.proxy_url = getattr(self, "proxy_url", None)
-            probe.collect_titles = bool(getattr(self, "title_filter", {}).get("enabled"))
+            probe.collect_titles = bool(getattr(self, "collect_titles", False) or getattr(self, "title_filter", {}).get("enabled"))
             diagnostics = probe.probe(list(requested))
             self._check_shutdown()
             try:
@@ -384,9 +394,10 @@ class GowitnessCapture:
             with preflight_file.open("x", encoding="utf-8") as stream:
                 json.dump(diagnostics, stream, indent=2)
             requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"
-                         and row["preflight"].get("skip_reason") != "title_rule"}
+                         and row["preflight"].get("skip_reason") not in {"title_rule", "unchanged_title"}}
             progress_metrics = {"eligible": len(requested), "launched": 0,
                                 "title_filtered": sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for rows in results.values() for row in rows),
+                                "title_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for rows in results.values() for row in rows),
                                 "skipped": sum(row["status"] == "skipped" for rows in results.values() for row in rows)}
             _report_progress(callback, "screenshots", current=0, total=len(requested), metrics=progress_metrics)
             if not requested:

@@ -262,7 +262,8 @@ class MonitorService:
                 next_run = (datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                             + timedelta(hours=interval)).isoformat()
         mode = project.get("discovery_mode", "enumerate")
-        modes = {key: {"interval_hours": interval if key == mode else 0,
+        modes = {key: {"capture_mode": project.get("capture_policy", {}).get("mode", "changes"),
+                       "interval_hours": interval if key == mode else 0,
                        "next_run_at": next_run if key == mode else None} for key in ("enumerate", "cached")}
         return {"interval_hours": interval, "next_run_at": next_run, "inherited": inherited, "modes": modes}
 
@@ -284,9 +285,9 @@ class MonitorService:
     def _schedule_due(self, project, now=None):
         return self._scheduled_mode(project, now) is not None
 
-    def set_schedules(self, project_id, intervals, *, discovery_mode):
+    def set_schedules(self, project_id, intervals, *, discovery_mode, capture_modes=None):
         with self._mutex:
-            return self.store.set_schedules(project_id, intervals, discovery_mode=discovery_mode)
+            return self.store.set_schedules(project_id, intervals, discovery_mode=discovery_mode, capture_modes=capture_modes)
 
     def set_proxy_settings(self, project_id, changes):
         with self._mutex:
@@ -300,6 +301,10 @@ class MonitorService:
         with self._mutex:
             return self.store.set_global_capture_filter(enabled=enabled, rules=rules)
 
+    def set_capture_policy(self, project_id, *, mode, refresh_days):
+        with self._mutex:
+            return self.store.set_capture_policy(project_id, mode=mode, refresh_days=refresh_days)
+
     def _report_progress(self, run_id, stage, message=None, **values):
         reporter = self._progress.get(run_id)
         if reporter is None:
@@ -311,7 +316,7 @@ class MonitorService:
             self._progress.pop(run_id, None)
             LOG.exception("Could not record live progress for %s", run_id)
 
-    def submit_scan(self, project_id, *, discovery_mode=None, _scheduled=False):
+    def submit_scan(self, project_id, *, discovery_mode=None, capture_mode=None, _scheduled=False):
         with self._mutex:
             if self._closed.is_set():
                 raise RuntimeError("The scan worker is shutting down.")
@@ -324,6 +329,15 @@ class MonitorService:
                 discovery_mode = self._scheduled_mode(project)
                 if discovery_mode is None:
                     return None
+                schedule = self.schedule_status(project)["modes"]
+                capture_mode = schedule[discovery_mode].get("capture_mode", "changes")
+                # A due full capture can be covered by the enumeration job too.
+                if discovery_mode == "enumerate":
+                    cached = schedule["cached"]
+                    due = cached.get("next_run_at")
+                    if (cached.get("interval_hours") and due and cached.get("capture_mode") == "full"
+                            and datetime.fromisoformat(due) <= datetime.now(timezone.utc)):
+                        capture_mode = "full"
             if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
                 raise RuntimeError("This is an offline simulated project. Create a separate project for real scans.")
             mode = Store._discovery_mode(project.get("discovery_mode", "enumerate")
@@ -336,7 +350,7 @@ class MonitorService:
             proxy_settings = self.store.proxy_settings(project_id)
             run = self.store.start_run(project_id, dns_workers=self.dns_status(project)["workers"],
                                        discovery_mode=mode, proxy_status=public_settings(proxy_settings),
-                                       dns_route_key=dns_route_key(proxy_settings))
+                                       dns_route_key=dns_route_key(proxy_settings), capture_mode=capture_mode)
             self._proxy_snapshots[run["id"]] = proxy_settings
             requested = self._cancel_events[run["id"]] = threading.Event()
             try:
@@ -346,7 +360,7 @@ class MonitorService:
                 LOG.exception("Could not initialize live progress for %s", run["id"])
             try:
                 self._futures[run["id"]] = self._executor.submit(self._execute, run)
-                self.store.advance_schedule(project_id, discovery_mode=mode)
+                self.store.advance_schedule(project_id, discovery_mode=mode, capture_mode=run["capture_policy"]["mode"])
             except Exception as exc:
                 requested.set()
                 future = self._futures.get(run["id"])
@@ -374,7 +388,8 @@ class MonitorService:
             result = self.store.cancel_run(run_id)
             if result["status"] == "cancelled":
                 self._report_progress(run_id, "cancelled", "Stopped by user; previously accepted results were kept.")
-                self.store.advance_schedule(result["project_id"], discovery_mode=result.get("discovery_mode"))
+                self.store.advance_schedule(result["project_id"], discovery_mode=result.get("discovery_mode"),
+                                            capture_mode=result.get("capture_policy", {}).get("mode"))
             future = self._futures.get(run_id)
             if future and future.cancel():
                 self._futures.pop(run_id, None)
@@ -383,8 +398,8 @@ class MonitorService:
                 self._proxy_snapshots.pop(run_id, None)
             return result
 
-    def scan_now(self, project_id, *, discovery_mode=None):
-        run = self.submit_scan(project_id, discovery_mode=discovery_mode)
+    def scan_now(self, project_id, *, discovery_mode=None, capture_mode=None):
+        run = self.submit_scan(project_id, discovery_mode=discovery_mode, capture_mode=capture_mode)
         with self._mutex:
             future = self._futures.get(run["id"])
         if future:
@@ -413,6 +428,11 @@ class MonitorService:
         if self.capturer is not None:
             self.capturer.probe_workers = workers
             self.capturer.title_filter = run.get("capture_filter", {})
+            self.capturer.capture_policy = run.get("capture_policy", {"mode": "full"})
+            self.capturer.title_baselines = self.store.capture_baselines(project_id)
+            self.capturer.baseline_root = self.data_dir
+            self.capturer.capture_route = run.get("proxy_status", {}).get("capture", {})
+            self.capturer.collect_titles = True
         from .proxy import direct_environment
         for adapter in (self.resolver, self.generator, self.discoverer, self.parking_classifier, self.capturer):
             if adapter is not None:

@@ -30,7 +30,7 @@ def _json(value) -> str:
 class Store:
     _RUN_SUMMARY_COLUMNS = ("id,project_id,status,started_at,finished_at,is_baseline,"
                             "'[]' AS events_json,counts_json,source_status_json,error,dns_workers,discovery_mode,report_deleted,"
-                            "proxy_status_json,dns_route_key,capture_filter_json")
+                            "proxy_status_json,dns_route_key,capture_filter_json,capture_policy_json")
     _STATE_QUERY = """SELECT d.*,
         EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id
             AND i.domain=d.domain AND i.kind='seed') AS is_seed,
@@ -154,6 +154,8 @@ class Store:
                 db.execute("ALTER TABLE projects ADD COLUMN dns_route_key TEXT NOT NULL DEFAULT 'direct'")
             if "capture_filter_json" not in columns:
                 db.execute("ALTER TABLE projects ADD COLUMN capture_filter_json TEXT NOT NULL DEFAULT '{}'")
+            if "capture_policy_json" not in columns:
+                db.execute("ALTER TABLE projects ADD COLUMN capture_policy_json TEXT NOT NULL DEFAULT '{}'")
             run_columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)")}
             if "dns_workers" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN dns_workers INTEGER")
@@ -167,6 +169,11 @@ class Store:
                 db.execute("ALTER TABLE runs ADD COLUMN dns_route_key TEXT NOT NULL DEFAULT 'direct'")
             if "capture_filter_json" not in run_columns:
                 db.execute("ALTER TABLE runs ADD COLUMN capture_filter_json TEXT NOT NULL DEFAULT '{}'")
+            if "capture_policy_json" not in run_columns:
+                db.execute("ALTER TABLE runs ADD COLUMN capture_policy_json TEXT NOT NULL DEFAULT '{}'")
+            schedule_columns = {row["name"] for row in db.execute("PRAGMA table_info(scan_schedules)")}
+            if "capture_mode" not in schedule_columns:
+                db.execute("ALTER TABLE scan_schedules ADD COLUMN capture_mode TEXT NOT NULL DEFAULT 'changes'")
             db.execute("""CREATE INDEX IF NOT EXISTS project_schedule_due ON projects(schedule_next_run_at)
                 WHERE schedule_interval_hours>0""")
             capture_columns = {row["name"] for row in db.execute("PRAGMA table_info(captures)")}
@@ -203,6 +210,8 @@ class Store:
         result.pop("proxy_settings_json", None)
         result.pop("dns_route_key", None)
         result["capture_filter"] = json.loads(result.pop("capture_filter_json", "{}"))
+        from .capture_changes import normalize_policy
+        result["capture_policy"] = normalize_policy(**json.loads(result.pop("capture_policy_json", "{}")))
         result["roots"] = json.loads(result.pop("roots_json"))
         scope_json = result.pop("comparison_scope_json")
         result["comparison_scope"] = json.loads(scope_json) if scope_json is not None else None
@@ -213,7 +222,7 @@ class Store:
         ).fetchone()
         result["last_run"] = Store._run(latest)
         result["schedules"] = {row["discovery_mode"]: dict(row) for row in db.execute(
-            "SELECT discovery_mode,interval_hours,next_run_at FROM scan_schedules WHERE project_id=?",
+            "SELECT discovery_mode,interval_hours,next_run_at,capture_mode FROM scan_schedules WHERE project_id=?",
             (result["id"],))}
         return result
 
@@ -228,6 +237,7 @@ class Store:
         result["report_deleted"] = bool(result.get("report_deleted", False))
         result["proxy_status"] = json.loads(result.pop("proxy_status_json", "{}"))
         result["capture_filter"] = json.loads(result.pop("capture_filter_json", "{}"))
+        result["capture_policy"] = json.loads(result.pop("capture_policy_json", "{}"))
         result.pop("dns_route_key", None)
         return result
 
@@ -462,6 +472,14 @@ class Store:
             db.execute("UPDATE projects SET capture_filter_json=? WHERE id=?", (_json(policy), project_id))
         return policy
 
+    def set_capture_policy(self, project_id, *, mode, refresh_days):
+        from .capture_changes import normalize_policy
+        policy = normalize_policy(mode, refresh_days)
+        with self._connection(write=True) as db:
+            self._require_project(db, project_id)
+            db.execute("UPDATE projects SET capture_policy_json=? WHERE id=?", (_json(policy), project_id))
+        return policy
+
     @staticmethod
     def _require_idle(db, project_id):
         if db.execute("SELECT 1 FROM runs WHERE project_id=? AND status='running'", (project_id,)).fetchone():
@@ -564,11 +582,16 @@ class Store:
                 db.execute("UPDATE projects SET discovery_mode=? WHERE id=?", (discovery_mode, project_id))
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
 
-    def set_schedules(self, project_id, intervals, *, discovery_mode):
+    def set_schedules(self, project_id, intervals, *, discovery_mode, capture_modes=None):
         """Save both independent cadences and the manual scan's default mode."""
         mode = self._discovery_mode(discovery_mode)
         if set(intervals) != {"enumerate", "cached"}:
             raise ValueError("Provide both enumeration and saved-inventory schedules.")
+        if capture_modes is not None:
+            from .capture_changes import normalize_policy
+            if set(capture_modes) != {"enumerate", "cached"}:
+                raise ValueError("Provide capture modes for both schedules.")
+            capture_modes = {key: normalize_policy(value)["mode"] for key, value in capture_modes.items()}
         for value in intervals.values():
             if (not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value)
                     or (value != 0 and not 1 <= value <= 8760)):
@@ -582,8 +605,10 @@ class Store:
                 # Saving a new name/default mode must not postpone unchanged cadences.
                 next_at = (old["next_run_at"] if old and old["interval_hours"] == interval else
                     (moment + timedelta(hours=interval)).isoformat(timespec="microseconds") if interval else None)
-                db.execute("INSERT OR REPLACE INTO scan_schedules VALUES(?,?,?,?)",
-                           (project_id, schedule_mode, float(interval), next_at))
+                capture_mode = (capture_modes[schedule_mode] if capture_modes is not None else
+                                old["capture_mode"] if old else "changes")
+                db.execute("INSERT OR REPLACE INTO scan_schedules(project_id,discovery_mode,interval_hours,next_run_at,capture_mode) VALUES(?,?,?,?,?)",
+                           (project_id, schedule_mode, float(interval), next_at, capture_mode))
             db.execute("""UPDATE projects SET schedule_interval_hours=0,schedule_next_run_at=NULL,
                 discovery_mode=? WHERE id=?""", (mode, project_id))
             return self._project(db, db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone())
@@ -604,7 +629,7 @@ class Store:
             return [project for project in projects
                     if "demo" not in (project.get("last_run") or {}).get("source_status", {})]
 
-    def advance_schedule(self, project_id, now=None, *, discovery_mode=None):
+    def advance_schedule(self, project_id, now=None, *, discovery_mode=None, capture_mode=None):
         """Advance after successful queue submission, without altering scan state.
 
         The worker serializes submission and this call. An unadvanced deadline
@@ -620,6 +645,9 @@ class Store:
                     # Full enumeration includes the saved-inventory DNS/web work.
                     # A cached scan must never defer the next enumeration.
                     if schedule["interval_hours"] and (mode == "enumerate" or schedule["discovery_mode"] == mode):
+                        if (schedule["discovery_mode"] != mode and schedule["capture_mode"] == "full"
+                                and capture_mode == "changes"):
+                            continue
                         next_at = (moment + timedelta(hours=schedule["interval_hours"])).isoformat(timespec="microseconds")
                         db.execute("UPDATE scan_schedules SET next_run_at=? WHERE project_id=? AND discovery_mode=?",
                                    (next_at, project_id, schedule["discovery_mode"]))
@@ -683,7 +711,7 @@ class Store:
             return {row[0] for row in db.execute(
                 "SELECT seed FROM generation_markers WHERE project_id=? AND signature=?", (project_id, signature))}
 
-    def start_run(self, project_id, *, dns_workers=None, discovery_mode=None, proxy_status=None, dns_route_key="direct"):
+    def start_run(self, project_id, *, dns_workers=None, discovery_mode=None, proxy_status=None, dns_route_key="direct", capture_mode=None):
         dns_workers = self._dns_workers(dns_workers)
         with self._connection(write=True) as db:
             project = self._require_project(db, project_id)
@@ -696,10 +724,14 @@ class Store:
                 raise RuntimeError("A scan is already running for this project.")
             from .title_filter import combine_policies
             capture_filter = combine_policies(self._global_capture_filter(db), json.loads(project["capture_filter_json"]))
+            from .capture_changes import normalize_policy
+            capture_policy = normalize_policy(**json.loads(project["capture_policy_json"]))
+            if capture_mode is not None:
+                capture_policy = normalize_policy(capture_mode, capture_policy["refresh_days"])
             run_id = str(uuid4())
-            db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key,capture_filter_json)
-                VALUES(?,?, 'running', ?,?,?,?,?,?)""",
-                       (run_id, project_id, _now(), workers, mode, _json(proxy_status or {}), dns_route_key, _json(capture_filter)))
+            db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key,capture_filter_json,capture_policy_json)
+                VALUES(?,?, 'running', ?,?,?,?,?,?,?)""",
+                       (run_id, project_id, _now(), workers, mode, _json(proxy_status or {}), dns_route_key, _json(capture_filter), _json(capture_policy)))
             return self._run(db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone())
 
     @staticmethod
@@ -870,6 +902,7 @@ class Store:
                      for domain, attempt in attempts])
                 counts["screenshots_total"] = len(attempts)
                 counts["screenshots_title_filtered"] = sum(attempt["preflight"].get("skip_reason") == "title_rule" for _, attempt in attempts)
+                counts["screenshots_title_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_title" for _, attempt in attempts)
                 for capture_status in ("captured", "failed", "unavailable", "skipped"):
                     counts["screenshots_" + capture_status] = sum(attempt["status"] == capture_status for _, attempt in attempts)
                 for image_change in ("first_capture", "changed", "unchanged", "uncertain"):
@@ -975,6 +1008,27 @@ class Store:
         with self._connection() as db:
             return [self._capture(row) for row in db.execute(
                 "SELECT * FROM captures WHERE run_id=? ORDER BY domain,scheme", (run_id,))]
+
+    def capture_baselines(self, project_id):
+        """Bulk metadata only: previous accepted checks and latest real images."""
+        with self._connection() as db:
+            db.execute("BEGIN")
+            previous_run = db.execute("""SELECT id FROM runs WHERE project_id=?
+                AND status IN ('completed','partial') ORDER BY started_at DESC,rowid DESC LIMIT 1""", (project_id,)).fetchone()
+            baselines = {}
+            if previous_run:
+                for row in db.execute("SELECT * FROM captures WHERE run_id=?", (previous_run["id"],)):
+                    baselines.setdefault((row["domain"], row["scheme"]), {})["previous"] = self._capture(row)
+            for row in db.execute("""SELECT * FROM (SELECT c.*,r.proxy_status_json AS routes_json,
+                ROW_NUMBER() OVER(PARTITION BY c.domain,c.scheme ORDER BY c.captured_at DESC,c.rowid DESC) AS image_rank
+                FROM captures c JOIN runs r ON r.id=c.run_id WHERE c.project_id=? AND c.status='captured')
+                WHERE image_rank=1""", (project_id,)):
+                baseline = baselines.setdefault((row["domain"], row["scheme"]), {})
+                image = self._capture(row)
+                image.pop("image_rank", None)
+                baseline["route"] = json.loads(image.pop("routes_json")).get("capture", {})
+                baseline["image"] = image
+            return baselines
 
     def latest_successful_capture(self, project_id, domain, scheme):
         domain = normalize_domain(domain)

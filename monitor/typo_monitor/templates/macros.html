@@ -12,7 +12,7 @@
   </form>
 {% endmacro %}
 {% macro visual_badge(capture, full=false, protocol='') %}
-  {% if capture and (capture.preflight|default({})).get("skip_reason") != "title_rule" %}{% set visual = capture.visual or {} %}{% set change = visual.get('change') if capture.status == 'captured' else 'uncertain' %}{% set labels = {'first_capture': 'First image', 'unchanged': 'Image unchanged', 'changed': 'Image changed', 'uncertain': 'Comparison uncertain'} %}
+  {% if capture and (capture.preflight|default({})).get("skip_reason") not in ["title_rule", "unchanged_title"] %}{% set visual = capture.visual or {} %}{% set change = visual.get('change') if capture.status == 'captured' else 'uncertain' %}{% set labels = {'first_capture': 'First image', 'unchanged': 'Image unchanged', 'changed': 'Image changed', 'uncertain': 'Comparison uncertain'} %}
   {% if change in labels %}<div class="local-image-result">{% if protocol %}<span class="image-protocol">{{ protocol }}</span>{% endif %}<span class="image-change {{ change }}">{{ labels[change] }}</span><span class="image-method">Local comparison</span>{% if full and visual.get('error') %}<p>{{ visual.error }}</p>{% endif %}{% if full and visual.get('distance') is not none %}<p>Perceptual distance: {{ visual.distance }}</p>{% endif %}</div>{% endif %}{% endif %}
 {% endmacro %}
 {% macro capture_status_line(attempt, scheme, full=false) %}
@@ -40,8 +40,18 @@
     <option value="enumerate"{% if discovery_settings.mode == 'enumerate' %} selected{% endif %}>{% if discovery_settings.enumeration_enabled %}Enumerate again{% else %}Generate from known seeds{% endif %}</option>
     <option value="cached"{% if discovery_settings.mode == 'cached' %} selected{% endif %}{% if not discovery_settings.cached_available %} disabled{% endif %}>Use saved inventory</option>
   </select></label>
+  <label class="scan-mode-control"><span>Report</span><select name="capture_mode" aria-label="Screenshot and report mode"{% if running or demo %} disabled{% endif %}><option value="changes"{% if project.capture_policy.mode == 'changes' %} selected{% endif %}>Changes only</option><option value="full"{% if project.capture_policy.mode == 'full' %} selected{% endif %}>Full capture / report</option></select></label>
   <button class="button primary" type="submit"{% if running or demo %} disabled{% endif %}><span aria-hidden="true">{% if running %}◌{% else %}↻{% endif %}</span> {% if demo %}Demo · read only{% elif running %}Scan in progress{% else %}Start scan{% endif %}</button>
 </form>
+{% endmacro %}
+{% macro website_report(entries, run, project) %}
+  <div class="website-change-grid">{% for entry in entries %}{% set capture = entry.capture %}<article class="website-change-card">
+    <div class="change-heading"><h3><a class="text-link" href="{{ url_for('candidate_detail', project_id=project.id, domain=capture.domain) }}">{{ capture.domain }}</a> · {{ capture.scheme|upper }}</h3><span class="badge neutral">{{ entry.reason }}</span></div>
+    {% if entry.before_title or entry.after_title %}<dl class="title-comparison"><div><dt>Previous title</dt><dd>{{ entry.before_title or 'No comparable title' }}</dd></div><div><dt>Current title</dt><dd>{{ entry.after_title or 'Title unavailable' }}</dd></div></dl>{% endif %}
+    {% if capture.status == 'captured' and entry.display_image %}<a class="run-current-image" href="{{ url_for('capture_image', run_id=run.id, domain=capture.domain, scheme=capture.scheme) }}" target="_blank" rel="noopener"><img src="{{ url_for('capture_image', run_id=run.id, domain=capture.domain, scheme=capture.scheme) }}" alt="Current {{ capture.scheme|upper }} screenshot of {{ capture.domain }}" loading="lazy" decoding="async"></a><p class="field-help">Captured in this scan · {{ capture.captured_at|date }}</p>{% elif capture.status == "captured" %}<p class="field-help">Same current-run image as {{ entry.duplicate_protocol }}. <a class="text-link" href="{{ url_for("capture_image", run_id=run.id, domain=capture.domain, scheme=capture.scheme) }}" target="_blank" rel="noopener">Open capture ↗</a></p>{% else %}<p class="field-help">{{ capture|capture_status }}{% if capture.error %} · {{ capture.error }}{% endif %}</p>{% endif %}
+    {% if capture.preflight.get('web_change') == 'endpoint_changed' %}{% set before = capture.preflight.get('previous_endpoint', {}) %}<details class="diagnostic"><summary>HTTP endpoint comparison</summary><p>Previous: {{ before.get('title_url') or 'URL unavailable' }} · HTTP {{ before.get('title_http_status') or before.get('http_status') or '?' }} · TLS verified {{ before.get('tls_verified') }}</p><p>Current: {{ capture.preflight.get('title_url') or 'URL unavailable' }} · HTTP {{ capture.preflight.get('title_http_status') or capture.http_status or '?' }} · TLS verified {{ capture.preflight.get('tls_verified') }}</p></details>{% endif %}
+    {% if entry.previous_run_id %}<a class="text-link" href="{{ url_for('run_detail', run_id=entry.previous_run_id) }}#website-changes">Previous report ↗</a>{% endif %}
+  </article>{% endfor %}</div>
 {% endmacro %}
 {% macro stop_button(run) %}
 <form method="post" action="{{ url_for('cancel_scan', run_id=run.id) }}" class="inline-form stop-scan-form">

@@ -112,6 +112,8 @@ def _capture_status(attempt):
     if not attempt:
         return "No screenshot"
     error = str(attempt.get("error") or "").strip().lower()
+    if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_title":
+        return "Title unchanged · no capture requested"
     if error.startswith("screenshot excluded by title rule:"):
         return "Excluded by title rule"
     timed_out = "timed out" in error or "timeout" in error or "deadline" in error
@@ -489,8 +491,8 @@ def create_app(service):
         project_or_404(project_id)
         try:
             mode = request.form.get("discovery_mode")
-            run = (service.submit_scan(str(project_id), discovery_mode=mode) if mode is not None
-                   else service.submit_scan(str(project_id)))
+            run = service.submit_scan(str(project_id), discovery_mode=mode,
+                                      capture_mode=request.form.get("capture_mode"))
         except RuntimeError as error:
             abort(409, description=str(error))
         except ValueError as error:
@@ -507,7 +509,9 @@ def create_app(service):
                 intervals = ({"enumerate": 0, "cached": 0} if request.form.get("action") == "off" else
                     {mode: float(request.form.get(mode + "_hours", "")) for mode in ("enumerate", "cached")})
                 service.set_schedules(str(project_id), intervals,
-                                      discovery_mode=request.form.get("discovery_mode", "enumerate"))
+                                      discovery_mode=request.form.get("discovery_mode", "enumerate"),
+                                      capture_modes={mode: request.form.get(mode + "_capture_mode", "changes")
+                                                     for mode in ("enumerate", "cached")})
             except (ValueError, OverflowError) as error:
                 abort(400, description=str(error) or "Choose valid intervals for both schedules.")
             flash("Both scan schedules are off." if not any(intervals.values()) else "Independent scan schedules saved.", "success")
@@ -573,6 +577,21 @@ def create_app(service):
     def global_exclusions():
         return render_template("global_exclusions.html", page="global-exclusions",
                                policy=service.store.global_capture_filter())
+
+    @app.post("/projects/<uuid:project_id>/capture-policy")
+    def update_capture_policy(project_id):
+        project = project_or_404(project_id)
+        if project.get("last_run") and "demo" in project["last_run"].get("source_status", {}):
+            abort(409, description="Create a real project to configure capture settings.")
+        try:
+            days = request.form.get("refresh_days", "")
+            if not days.isascii() or not days.isdigit() or len(days) > 3:
+                raise ValueError("Choose 0–365 days for screenshot refresh.")
+            service.set_capture_policy(str(project_id), mode=request.form.get("mode", "changes"), refresh_days=int(days))
+        except ValueError as error:
+            abort(400, description=str(error))
+        flash("Screenshot policy saved for newly queued scans.", "success")
+        return redirect(url_for("project_detail", project_id=project_id, _anchor="capture-policy"), code=303)
 
     @app.post("/settings/title-exclusions")
     def update_global_exclusions():
@@ -674,12 +693,25 @@ def create_app(service):
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
         progress, outputs = live_data(run_id)
+        from .capture_changes import report_entries
+        report_mode = run.get("capture_policy", {}).get("mode", "full")
+        website_entries = report_entries(service.store.list_run_captures(str(run_id)), report_mode)
+        page_text = request.args.get("web_page", "1")
+        if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8 or int(page_text) < 1:
+            abort(400, description="Choose a valid website report page.")
+        web_pages = max(1, (len(website_entries) + 99) // 100)
+        web_page = min(int(page_text), web_pages)
+        web_total = len(website_entries)
+        website_entries = website_entries[(web_page - 1) * 100:web_page * 100]
         handoff = review_selection(service.store, str(run_id)) if run["status"] in {"completed", "partial"} else None
         return render_template("run.html", project=project, run=run, page="run",
                                progress=progress, outputs=outputs, progress_stages=PROGRESS_STAGES,
                                demo="demo" in run.get("source_status", {}), handoff=handoff,
+                               website_entries=website_entries, report_mode=report_mode,
+                               web_page=web_page, web_pages=web_pages, web_total=web_total,
                                handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
                                                "title_filtered": "Excluded by title rule",
+                                               "title_unchanged": "Unchanged titles · no screenshots requested",
                                                "unchanged": "Unchanged images", "uncertain": "Uncertain comparisons",
                                                "duplicate": "Duplicate protocol pairs", "parked": "Likely parked",
                                                "reviewed": "Already reviewed"})
