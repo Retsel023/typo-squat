@@ -22,6 +22,29 @@ from urllib.parse import unquote, urlsplit
 
 
 STAGES = ("discovery", "dns", "capture")
+TOR_STAGES = ("discovery", "capture")
+
+
+def tor_proxy_url():
+    """Compose supplies its service name; native users default to local Tor."""
+    value = os.environ.get("TYPO_TOR_PROXY_URL", "socks5h://127.0.0.1:9050").strip()
+    validate_url(value)
+    if urlsplit(value).username is not None:
+        raise ValueError("The Tor preset must be a SOCKS5 endpoint without credentials.")
+    return value
+
+
+def resolve_settings(settings):
+    """Resolve the preset before queueing, without modifying saved custom URLs."""
+    result = {}
+    for stage in STAGES:
+        row = dict(settings.get(stage, {}))
+        if row.get("source", "custom") == "tor":
+            if stage not in TOR_STAGES:
+                raise ValueError("Tor cannot be used for the UDP DNS stage.")
+            row["url"] = tor_proxy_url()
+        result[stage] = row
+    return result
 
 
 def direct_environment():
@@ -64,7 +87,10 @@ def public_settings(settings):
         if value:
             parsed = urlsplit(validate_url(value))
             label = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-        result[stage] = {"enabled": bool(row.get("enabled")), "configured": bool(value), "endpoint": label}
+        source = row.get("source", "custom")
+        result[stage] = {"enabled": bool(row.get("enabled")), "configured": bool(value), "endpoint": label,
+                         "source": source,
+                         "custom_configured": bool(row.get("custom_url", value if source == "custom" else ""))}
     return result
 
 

@@ -356,7 +356,7 @@ def create_app(service):
         discovery_settings = (service.discovery_status(project) if hasattr(service, "discovery_status") else
             {"mode": project.get("discovery_mode", "enumerate"), "cached_available": bool(counts["total"]),
              "enumeration_enabled": getattr(service, "discovery", True)})
-        from .proxy import public_settings
+        from .proxy import public_settings, tor_proxy_url
         proxy_settings = public_settings(service.store.proxy_settings(str(project_id)))
         return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
                                counts=counts, query=query, status_filter=status,
@@ -373,6 +373,7 @@ def create_app(service):
                                discovery_settings=discovery_settings,
                                global_capture_filter=service.store.global_capture_filter(),
                                proxy_settings=proxy_settings,
+                               tor_proxy_endpoint=tor_proxy_url(),
                                gallery_params={**filter_params, "view": "gallery"},
                                table_params={**filter_params, "view": "table"},
                                has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved"))
@@ -563,6 +564,7 @@ def create_app(service):
             abort(409, description="Create a real project to configure proxy routes.")
         from .proxy import STAGES
         changes = {stage: {"enabled": request.form.get(stage + "_enabled") == "1",
+                           "source": request.form.get(stage + "_source", "custom"),
                            "url": request.form.get(stage + "_url", ""),
                            "clear": request.form.get(stage + "_clear") == "1"} for stage in STAGES}
         try:

@@ -335,7 +335,7 @@ Each project's **Proxy routes** panel has three independent off/on switches:
    is insufficient for this switch. Original upstream resolver IPs, question types
    and ordering/balancing remain unchanged; loopback endpoint/port allowlists are
    validated separately. Proxy/relay errors never become negative DNS evidence.
-3. **Website checks + Gowitness** routes the header preflight and Chromium's
+3. **Website checks + Gowitness** routes the HTTP/title preflight and Chromium's
    HTTP(S) page requests through the same SOCKS5 endpoint. Browser captures keep
    their native `--chrome-proxy` route via a credential-free loopback bridge;
    TLS remains end-to-end. The Linux/POSIX browser launcher disables QUIC and the
@@ -343,7 +343,7 @@ Each project's **Proxy routes** panel has three independent off/on switches:
    switch can help inspect websites when direct access from the scanner is
    filtered by its firewall.
 
-Enter `socks5h://host:1080` or `socks5h://user:password@host:1080` for each stage;
+For a custom proxy, enter `socks5h://host:1080` or `socks5h://user:password@host:1080` for each stage;
 `socks5://` is also accepted and uses remote hostname resolution. The same URL
 can be used for all three stages. The SOCKS server must be reachable from the
 scanner container and support an IPv4 outer connection. In Docker, `localhost`
@@ -354,9 +354,23 @@ The switches default to off for existing and new projects. Save them before
 queueing a scan; manual/API/scheduled runs snapshot the selected routes and show
 those routes in their details. Changing settings does not alter queued/running
 work. An empty URL field retains a configured proxy, switching off retains its
-URL, and **Clear saved proxy and turn off** removes it. Saving settings performs
+URL, and **Clear saved route and turn off** removes it. Saving settings performs
 no proxy connection or test. Proxies are never selected implicitly from the
 server's `HTTP_PROXY`/`HTTPS_PROXY` environment when a stage is off.
+
+Discovery and website capture also offer **Use Tor · preset address**. The
+optional Compose `tor` profile builds a separate non-root client with a private
+state volume and no host-published SOCKS/control ports. Its healthcheck reads
+local bootstrap/circuit state. Start it and wait for healthy before scanning;
+the UI does not launch Docker. The DNS stage rejects the Tor preset because
+its UDP transport is unsupported. Amass remains skipped for proxied discovery.
+Custom proxy URLs stay saved when switching to Tor, but are hidden while it is
+selected. Presets are resolved before queueing, then frozen with each run.
+`TYPO_TOR_PROXY_URL` defaults to local port 9050 natively; Compose sets
+`socks5h://tor:9050`. `TYPO_WEB_TIMEOUT` exposes the website check timeout to
+Compose (default 3 seconds); the Tor guide's example uses 15 seconds for added
+latency. Tor itself has no automatic restart policy and all route switches stay
+off until explicitly enabled. See [Tor setup](../docs/TOR.md).
 
 Proxy URLs, including credentials, are stored in this project's local SQLite
 settings. Inputs are never prefilled with credentials; reports, source metadata,
@@ -382,9 +396,10 @@ allow a longer budget when your proxy adds latency. DNS transport failure closes
 the affected route; HTTP bridge failures close the connection without synthesizing
 a website response, and neither route retries directly.
 
-The image installs pinned **PySocks 1.7.1**. Rebuild/recreate it to include the new
-dependency; no proxy endpoint, credential, Docker action or network test is
-configured automatically. Native users install the updated requirements. The
+The image installs pinned **PySocks 1.7.1**. Rebuild/recreate it to include the
+dependency and UI changes. Custom credentials are never supplied automatically,
+and saving a route never launches Docker or performs a network test. Native
+users install the updated requirements. The
 implementation uses per-route sockets rather than global socket monkeypatching.
 Protocol/library references: [SOCKS5](https://www.rfc-editor.org/rfc/rfc1928),
 [PySocks](https://github.com/Anorov/PySocks), and

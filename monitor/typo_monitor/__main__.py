@@ -50,8 +50,8 @@ def parser():
     p.add_argument("--gowitness-path", help="Path to Gowitness 3.2.2")
     p.add_argument("--chrome-path", help="Path to Chrome/Chromium for captures")
     p.add_argument("--capture-workers", type=int, default=4, help="Concurrent browser captures")
-    p.add_argument("--web-timeout", type=float, default=3,
-                   help="HTTP/HTTPS response check timeout before browser captures, in seconds")
+    p.add_argument("--web-timeout", type=float, default=os.environ.get("TYPO_WEB_TIMEOUT", 3),
+                   help="HTTP/HTTPS response check timeout in seconds (TYPO_WEB_TIMEOUT, otherwise 3)")
     p.add_argument("--capture-timeout", type=float, default=900,
                    help="Capture drain deadline after streamed input closes; whole invocation deadline in DNS-first mode, seconds")
     p.add_argument("--capture-driver", choices=["gorod", "chromedp"], default="gorod")

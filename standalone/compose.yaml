@@ -26,6 +26,11 @@ services:
       TYPO_DISCOVERY_ENGINE: "${TYPO_DISCOVERY_ENGINE:-combined}"
       TYPO_DISCOVERY_TIMEOUT: "${TYPO_DISCOVERY_TIMEOUT:-600}"
       TYPO_AMASS_CONFIG: "${TYPO_AMASS_CONFIG:-}"
+      TYPO_TOR_PROXY_URL: "${TYPO_TOR_PROXY_URL:-socks5h://tor:9050}"
+      TYPO_WEB_TIMEOUT: "${TYPO_WEB_TIMEOUT:-3}"
+    networks:
+      - default
+      - tor-route
     init: true
     shm_size: 256mb
     restart: unless-stopped
@@ -43,5 +48,30 @@ services:
       - no-new-privileges:true
     stop_grace_period: 30s
 
+  # Opt-in: docker compose --profile tor up --build -d monitor tor
+  tor:
+    profiles: ["tor"]
+    build: ../monitor/tor
+    image: typo-monitor:tor
+    init: true
+    restart: "no"
+    networks:
+      - tor-route
+    volumes:
+      - tor-data:/var/lib/tor
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
 volumes:
   standalone-data:
+  tor-data:
+
+networks:
+  default:
+  tor-route:

@@ -67,7 +67,9 @@ def compare(capture, domain, row, diagnostic):
             or not _same_endpoint(diagnostic, image_probe)):
         return False
     # Moving the website stage to another proxy is a fresh browser baseline.
-    if baseline.get("route") != getattr(capture, "capture_route", {}):
+    def route_key(route):
+        return (bool(route.get("enabled")), route.get("endpoint") if route.get("enabled") else None)
+    if route_key(baseline.get("route", {})) != route_key(getattr(capture, "capture_route", {})):
         return False
     try:
         root = Path(capture.baseline_root).resolve()

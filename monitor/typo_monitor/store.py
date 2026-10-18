@@ -426,10 +426,11 @@ class Store:
         """Private worker/settings access. Never put this return value in logs."""
         with self._connection() as db:
             project = self._require_project(db, project_id)
-            return json.loads(project["proxy_settings_json"])
+            from .proxy import resolve_settings
+            return resolve_settings(json.loads(project["proxy_settings_json"]))
 
     def set_proxy_settings(self, project_id, changes):
-        from .proxy import STAGES, validate_url, public_settings
+        from .proxy import STAGES, TOR_STAGES, validate_url, public_settings, tor_proxy_url
         if set(changes) != set(STAGES):
             raise ValueError("Provide settings for all three proxy stages.")
         with self._connection(write=True) as db:
@@ -437,13 +438,23 @@ class Store:
             settings = json.loads(project["proxy_settings_json"])
             for stage in STAGES:
                 change = changes[stage]
-                value = "" if change.get("clear") else change.get("url", "").strip() or settings.get(stage, {}).get("url", "")
+                old = settings.get(stage, {})
+                source = change.get("source", old.get("source", "custom"))
+                if not isinstance(source, str) or source not in {"custom", "tor"} or source == "tor" and stage not in TOR_STAGES:
+                    raise ValueError("Choose a custom proxy, or Tor for discovery/website capture. Tor does not support UDP DNS.")
+                custom_url = (change.get("url", "").strip() or old.get("custom_url",
+                              old.get("url", "") if old.get("source", "custom") == "custom" else ""))
+                if custom_url:
+                    validate_url(custom_url)
                 enabled = bool(change.get("enabled")) and not change.get("clear")
+                if change.get("clear"):
+                    source, custom_url = "custom", ""
+                value = tor_proxy_url() if source == "tor" else custom_url
                 if value:
                     validate_url(value)
                 if enabled and not value:
                     raise ValueError(f"Configure a SOCKS5 proxy before enabling {stage}.")
-                settings[stage] = {"enabled": enabled, "url": value}
+                settings[stage] = {"enabled": enabled, "url": value, "source": source, "custom_url": custom_url}
             db.execute("UPDATE projects SET proxy_settings_json=? WHERE id=?", (_json(settings), project_id))
             return public_settings(settings)
 

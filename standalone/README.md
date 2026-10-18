@@ -93,7 +93,7 @@ Compose file. The unprivileged user, read-only image, dropped capabilities and
 `no-new-privileges` setting remain in place. See [mount options](https://docs.docker.com/engine/storage/tmpfs/#options-for---tmpfs).
 
 The client's **Proxy routes** panel has independent SOCKS5 switches for discovery,
-DNS lookups, and website checks + Gowitness. Enter a reachable
+DNS lookups, and website checks + Gowitness. For a custom proxy, enter a reachable
 `socks5h://host:port` or `socks5h://user:password@host:port` for each stage, then
 save. The same URL can be reused. Empty URL fields retain existing settings;
 credentials are not displayed in reports. All switches initially stay off and
@@ -114,6 +114,16 @@ Rebuild/recreate after this update to install PySocks in the image. Keep your
 existing Compose port/resolver/environment settings; the proxy addresses themselves
 are configured in the UI. A proxy must be reachable from the container, so a
 `localhost` URL refers to that container rather than your host's local proxy.
+
+For provider-free routing, the optional **Tor** profile supplies a preset address
+for discovery and website capture. Choose **Use Tor · preset address** in those
+stages and leave the custom URL fields empty. First start the Tor container and
+wait for it to become healthy; selecting Tor in the UI never starts Docker.
+DNS still needs a separate UDP-capable proxy if you want to proxy that stage.
+The Tor port is not published on your host, its client state has a separate
+volume, and it does not automatically restart with Docker. See the
+[Tor setup guide](../docs/TOR.md) for the complete startup command preserving
+port 5057, candidate limits and DNS settings, plus logs and shutdown commands.
 
 Choose **DNS concurrency** when creating a client, or save it on the client's page
 before starting a scan. Use 20 for up to 20 simultaneous DNS questions with MassDNS; the supported

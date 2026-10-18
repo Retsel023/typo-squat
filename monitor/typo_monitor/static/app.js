@@ -205,3 +205,21 @@ if (runProgress) {
     if (!document.hidden && document.body.dataset.refresh === "true") window.location.reload();
   });
 }
+
+// Preset selection changes the form only; it never starts Docker or contacts Tor.
+for (const stage of document.querySelectorAll("[data-proxy-stage]")) {
+  const source = stage.querySelector("[data-proxy-source]");
+  if (!source) continue;
+  const custom = stage.querySelector("[data-proxy-custom]");
+  const help = stage.querySelector("[data-proxy-tor-help]");
+  const input = custom.querySelector("input");
+  const readOnly = input.disabled;
+  const update = () => {
+    const tor = source.value === "tor";
+    custom.hidden = tor;
+    input.disabled = readOnly || tor;
+    help.hidden = !tor;
+  };
+  source.addEventListener("change", update);
+  update();
+}

@@ -1,0 +1,18 @@
+# A Tor client, never a relay/exit server.
+ClientOnly 1
+RunAsDaemon 0
+DataDirectory /var/lib/tor
+Log notice stdout
+
+# Reachable only on the private Compose bridge; no host port is published.
+SocksPort 0.0.0.0:9050
+SocksPolicy accept 127.0.0.0/8
+SocksPolicy accept 10.0.0.0/8
+SocksPolicy accept 172.16.0.0/12
+SocksPolicy accept 192.168.0.0/16
+SocksPolicy reject *
+
+# Healthchecks inspect local bootstrap state without making website requests.
+ControlSocket /var/lib/tor/control.sock
+CookieAuthentication 1
+CookieAuthFile /var/lib/tor/control.authcookie
