@@ -215,7 +215,7 @@ def capture_stream(capture, domains_iterator, workdir):
         command = [capture.executable, "scan", "file", "-f", "-",
                    "--screenshot-path", str(screenshot_dir), "--screenshot-format", "png",
                    "--write-jsonl", "--write-jsonl-file", str(metadata),
-                   "--threads", str(capture.threads), "--timeout", "60",
+                   *capture.performance_arguments(),
                    "--chrome-path", capture.chrome_path, "--driver", capture.driver,
                    "--log-scan-errors", "--skip-html", "--skip-network-logs"]
         if getattr(capture, "proxy_url", None):
@@ -226,9 +226,9 @@ def capture_stream(capture, domains_iterator, workdir):
                                    shell=False, cwd=workdir, bufsize=0, start_new_session=os.name == "posix",
                                    env=getattr(capture, "proxy_environment", None))
         os.set_blocking(process.stdin.fileno(), False)
-        monitor = _JsonlProgress(metadata, workdir, [], callback, {})
+        monitor = _JsonlProgress(metadata, workdir, [], callback, capture.performance_metrics())
         _report_progress(callback, "screenshots", "Capturing responsive endpoints while DNS checks continue.",
-                         current=0, total=len(requested), metrics={"input_open": True})
+                         current=0, total=len(requested), metrics={"input_open": True, **capture.performance_metrics()})
 
     def write_url(url):
         nonlocal issue

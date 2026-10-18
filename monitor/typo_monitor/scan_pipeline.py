@@ -128,7 +128,8 @@ class CaptureOverlap:
             elif stage == "screenshots":
                 if "reported" in values:
                     self.metrics["captures_reported"] = values["reported"]
-                for key in ("eligible", "launched", "skipped", "title_filtered", "title_unchanged", "text_unchanged", "titles_found"):
+                for key in ("eligible", "launched", "skipped", "title_filtered", "title_unchanged", "text_unchanged", "titles_found",
+                            "browser_workers", "page_timeout_seconds", "screenshot_delay_seconds", "web_workers"):
                     if key in values:
                         self.metrics[key] = values[key]
             self.report("pipeline", f"{stage}: {message}" if message else None,

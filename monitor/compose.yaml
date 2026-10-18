@@ -14,11 +14,16 @@ services:
       TYPO_AMASS_CONFIG: "${TYPO_AMASS_CONFIG:-}"
       TYPO_TOR_PROXY_URL: "${TYPO_TOR_PROXY_URL:-socks5h://tor:9050}"
       TYPO_WEB_TIMEOUT: "${TYPO_WEB_TIMEOUT:-3}"
+      TYPO_WEB_WORKERS: "${TYPO_WEB_WORKERS:-24}"
+      TYPO_CAPTURE_WORKERS: "${TYPO_CAPTURE_WORKERS:-4}"
+      TYPO_CAPTURE_PAGE_TIMEOUT: "${TYPO_CAPTURE_PAGE_TIMEOUT:-60}"
+      TYPO_CAPTURE_DELAY: "${TYPO_CAPTURE_DELAY:-3}"
+      TYPO_CAPTURE_TIMEOUT: "${TYPO_CAPTURE_TIMEOUT:-900}"
     networks:
       - default
       - tor-route
     init: true
-    shm_size: 256mb
+    shm_size: "${TYPO_BROWSER_SHM_SIZE:-256mb}"
     restart: unless-stopped
     ports:
       - "127.0.0.1:5000:5000"

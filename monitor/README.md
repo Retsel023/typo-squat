@@ -144,8 +144,12 @@ DNS monitoring continues. `--capture-workers` defaults to 4, `--capture-timeout`
 to a 900-second drain deadline after the streaming URL input closes (or the
 whole capture invocation for the DNS-first path), and `--capture-driver` to `gorod`; `chromedp` is also
 available. Missing binaries and individual HTTP/HTTPS failures are displayed.
-Streaming browser captures also have an independent 60-second per-page timeout.
+Browser captures have a separately configurable per-page timeout (60 seconds by default).
 The Docker image already includes the required capture tools.
+
+See [browser performance controls](../docs/PERFORMANCE.md) for per-project
+settings, Compose environment variables, and why this server cannot be scaled
+by duplicating monitor containers on one shared data volume.
 
 Before Gowitness, lightweight HTTP and HTTPS checks test each resolving domain
 on ports 80 and 443. Only responding endpoints reach the browser. Any HTTP
@@ -453,8 +457,8 @@ of 24. Each enqueued run freezes its effective count and displays it in run
 details; changing the project affects later submissions, including scheduled
 ones. MassDNS uses it as the number of simultaneous DNS questions (`-s`),
 while dnspython uses it as the number of domain worker threads. The same setting
-limits later parking and website checks. Browser capture concurrency remains
-separate.
+limits later parking checks. HTTP/text checks and browser captures now have
+their own independent concurrency settings.
 
 Concurrency limits outstanding work, not queries per second. The rebuilt
 MassDNS **1.1.0+typowatch2** fixes dedicated-resolver ownership in the pinned

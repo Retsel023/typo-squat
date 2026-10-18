@@ -192,10 +192,12 @@ def create_app(service):
 
     @app.context_processor
     def common_context():
+        from .capture_changes import PERFORMANCE_DEFAULTS
         return {"csrf_token": session.get("csrf_token", ""), "domain_labels": DOMAIN_LABELS,
                 "event_labels": EVENT_LABELS, "run_labels": RUN_LABELS,
                 "interval_hours": getattr(service, "interval_hours", 0),
                 "server_dns_workers": default_dns_workers(),
+                "capture_defaults": getattr(service, "capture_defaults", PERFORMANCE_DEFAULTS),
                 "navigation_projects": navigation_projects()}
 
     def project_or_404(project_id):
@@ -565,7 +567,14 @@ def create_app(service):
             days = request.form.get("refresh_days", "")
             if not days.isascii() or not days.isdigit() or len(days) > 3:
                 raise ValueError("Choose 0–365 days for screenshot refresh.")
-            service.set_capture_policy(str(project_id), mode=request.form.get("mode", "changes"), refresh_days=int(days), comparison=request.form.get("comparison", "text"))
+            from .capture_changes import PERFORMANCE_LIMITS
+            performance = {}
+            for key in PERFORMANCE_LIMITS:
+                value = request.form.get(key, "").strip()
+                if value and (not value.isascii() or not value.isdigit() or len(value) > 3):
+                    raise ValueError("Capture performance settings must be whole numbers, or blank for the server default.")
+                performance[key] = int(value) if value else None
+            service.set_capture_policy(str(project_id), mode=request.form.get("mode", "changes"), refresh_days=int(days), comparison=request.form.get("comparison", "text"), **performance)
         except ValueError as error:
             abort(400, description=str(error))
         flash("Screenshot policy saved for newly queued scans.", "success")

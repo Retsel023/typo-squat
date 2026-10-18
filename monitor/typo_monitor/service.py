@@ -112,6 +112,13 @@ class MonitorService:
             from .screenshots import GowitnessCapture
             capturer = GowitnessCapture()
         self.capturer = capturer if capture else None
+        from .capture_changes import normalize_policy, PERFORMANCE_DEFAULTS
+        attributes = {"browser_workers": "threads", "page_timeout": "page_timeout",
+                      "screenshot_delay": "screenshot_delay", "web_workers": "probe_workers"}
+        defaults = {key: value if getattr(self.capturer, attributes[key], None) is None
+                    else getattr(self.capturer, attributes[key]) for key, value in PERFORMANCE_DEFAULTS.items()}
+        checked_defaults = normalize_policy(**defaults)
+        self.capture_defaults = {key: checked_defaults[key] for key in PERFORMANCE_DEFAULTS}
         self.capture_enabled = capture
         self.interval_hours = interval_hours
         self.max_candidates = max_candidates
@@ -301,9 +308,13 @@ class MonitorService:
         with self._mutex:
             return self.store.set_global_capture_filter(enabled=enabled, rules=rules)
 
-    def set_capture_policy(self, project_id, *, mode, refresh_days, comparison="text"):
+    def set_capture_policy(self, project_id, *, mode, refresh_days, comparison="text", **performance):
         with self._mutex:
-            return self.store.set_capture_policy(project_id, mode=mode, refresh_days=refresh_days, comparison=comparison)
+            from .capture_changes import normalize_policy
+            policy = normalize_policy(mode, refresh_days, comparison, **performance)
+            normalize_policy(**{**policy, **{key: policy[key] if policy[key] is not None else value
+                                           for key, value in self.capture_defaults.items()}})
+            return self.store.set_capture_policy(project_id, mode=mode, refresh_days=refresh_days, comparison=comparison, **performance)
 
     def _report_progress(self, run_id, stage, message=None, **values):
         reporter = self._progress.get(run_id)
@@ -350,7 +361,8 @@ class MonitorService:
             proxy_settings = self.store.proxy_settings(project_id)
             run = self.store.start_run(project_id, dns_workers=self.dns_status(project)["workers"],
                                        discovery_mode=mode, proxy_status=public_settings(proxy_settings),
-                                       dns_route_key=dns_route_key(proxy_settings), capture_mode=capture_mode)
+                                       dns_route_key=dns_route_key(proxy_settings), capture_mode=capture_mode,
+                                       capture_defaults=self.capture_defaults)
             self._proxy_snapshots[run["id"]] = proxy_settings
             requested = self._cancel_events[run["id"]] = threading.Event()
             try:
@@ -426,7 +438,14 @@ class MonitorService:
         if self.parking_classifier is not None:
             self.parking_classifier.workers = workers
         if self.capturer is not None:
-            self.capturer.probe_workers = workers
+            performance = {}
+            for key, default in self.capture_defaults.items():
+                configured = run.get("capture_policy", {}).get(key)
+                performance[key] = default if configured is None else configured
+            self.capturer.threads = performance["browser_workers"]
+            self.capturer.page_timeout = performance["page_timeout"]
+            self.capturer.screenshot_delay = performance["screenshot_delay"]
+            self.capturer.probe_workers = performance["web_workers"]
             self.capturer.title_filter = run.get("capture_filter", {})
             self.capturer.capture_policy = run.get("capture_policy", {"mode": "full"})
             self.capturer.title_baselines = self.store.capture_baselines(project_id)

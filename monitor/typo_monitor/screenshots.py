@@ -313,11 +313,15 @@ class GowitnessCapture:
     """
 
     def __init__(self, executable=None, chrome_path=None, timeout=900, threads=4, driver="gorod",
-                 probe=None, probe_timeout=3, probe_workers=24):
+                 probe=None, probe_timeout=3, probe_workers=24, page_timeout=60, screenshot_delay=3):
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("Screenshot timeout must be positive and finite.")
         if not isinstance(threads, int) or isinstance(threads, bool) or not 1 <= threads <= 32:
             raise ValueError("Screenshot threads must be between 1 and 32.")
+        if page_timeout is None or screenshot_delay is None:
+            raise ValueError("Browser page timeout and screenshot delay require explicit integer values.")
+        from .capture_changes import normalize_policy
+        normalize_policy(page_timeout=page_timeout, screenshot_delay=screenshot_delay)
         self.executable = _executable_path(executable) if executable else shutil.which("gowitness")
         self.chrome_path = _executable_path(chrome_path) if chrome_path else None
         if not self.chrome_path:
@@ -330,6 +334,7 @@ class GowitnessCapture:
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 self.chrome_path = str(candidate)
         self.timeout, self.threads = timeout, threads
+        self.page_timeout, self.screenshot_delay = page_timeout, screenshot_delay
         if driver not in {"gorod", "chromedp"}:
             raise ValueError("Capture driver must be gorod or chromedp.")
         self.driver = driver
@@ -338,6 +343,15 @@ class GowitnessCapture:
         self.probe = probe
         self.probe_timeout, self.probe_workers = probe_timeout, probe_workers
         self.cancel_event = None
+
+    def performance_arguments(self):
+        """The streamed and DNS-first browser paths use the same limits."""
+        return ["--threads", str(self.threads), "--timeout", str(self.page_timeout),
+                "--delay", str(self.screenshot_delay)]
+
+    def performance_metrics(self):
+        return {"browser_workers": self.threads, "page_timeout_seconds": self.page_timeout,
+                "screenshot_delay_seconds": self.screenshot_delay, "web_workers": self.probe_workers}
 
     def _check_shutdown(self):
         if self.cancel_event is not None and self.cancel_event.is_set():
@@ -427,7 +441,7 @@ class GowitnessCapture:
                 json.dump(diagnostics, stream, indent=2)
             requested = {url: row for url, row in requested.items() if row["preflight"]["status"] == "http_response"
                          and row["preflight"].get("skip_reason") not in {"title_rule", "unchanged_title", "unchanged_content"}}
-            progress_metrics = {"eligible": len(requested), "launched": 0,
+            progress_metrics = {**self.performance_metrics(), "eligible": len(requested), "launched": 0,
                                 "title_filtered": sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for rows in results.values() for row in rows),
                                 "title_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for rows in results.values() for row in rows),
                                 "text_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for rows in results.values() for row in rows),
@@ -458,7 +472,7 @@ class GowitnessCapture:
             command = [self.executable, "scan", "file", "-f", str(targets),
                        "--screenshot-path", str(screenshot_dir), "--screenshot-format", "png",
                        "--write-jsonl", "--write-jsonl-file", str(metadata),
-                       "--threads", str(self.threads), "--chrome-path", self.chrome_path, "--driver", self.driver,
+                       *self.performance_arguments(), "--chrome-path", self.chrome_path, "--driver", self.driver,
                        "--log-scan-errors", "--skip-html", "--skip-network-logs"]
             if getattr(self, "proxy_url", None):
                 command.extend(["--chrome-proxy", self.proxy_url])

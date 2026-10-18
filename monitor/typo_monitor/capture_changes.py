@@ -6,14 +6,29 @@ import difflib
 import textwrap
 
 
-def normalize_policy(mode="changes", refresh_days=30, comparison="text"):
+PERFORMANCE_LIMITS = {"browser_workers": (1, 32), "page_timeout": (5, 180),
+                      "screenshot_delay": (0, 30), "web_workers": (1, 128)}
+PERFORMANCE_DEFAULTS = {"browser_workers": 4, "page_timeout": 60, "screenshot_delay": 3, "web_workers": 24}
+
+
+def normalize_policy(mode="changes", refresh_days=30, comparison="text", *, browser_workers=None,
+                     page_timeout=None, screenshot_delay=None, web_workers=None):
     if not isinstance(mode, str) or mode not in {"changes", "full"}:
         raise ValueError("Choose changes or full for capture_mode.")
     if type(refresh_days) is not int or not 0 <= refresh_days <= 365:
         raise ValueError("Screenshot refresh must be 0–365 days; 0 disables periodic recaptures.")
     if not isinstance(comparison, str) or comparison not in {"text", "title"}:
         raise ValueError("Choose text or title for comparison.")
-    return {"mode": mode, "refresh_days": refresh_days, "comparison": comparison}
+    result = {"mode": mode, "refresh_days": refresh_days, "comparison": comparison,
+              "browser_workers": browser_workers, "page_timeout": page_timeout,
+              "screenshot_delay": screenshot_delay, "web_workers": web_workers}
+    for name, (minimum, maximum) in PERFORMANCE_LIMITS.items():
+        value = result[name]
+        if value is not None and (type(value) is not int or not minimum <= value <= maximum):
+            raise ValueError(f"{name.replace('_', ' ')} must be a whole number from {minimum} to {maximum}, or blank for the server default.")
+    if page_timeout is not None and screenshot_delay is not None and screenshot_delay >= page_timeout:
+        raise ValueError("Screenshot delay must be shorter than the page timeout.")
+    return result
 
 
 def text_complete(row):

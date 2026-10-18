@@ -128,8 +128,8 @@ port 5057, candidate limits and DNS settings, plus logs and shutdown commands.
 Choose **DNS concurrency** when creating a client, or save it on the client's page
 before starting a scan. Use 20 for up to 20 simultaneous DNS questions with MassDNS; the supported
 range is 1–128. A blank setting follows the server default of 24. This setting
-also controls the subsequent DNS parking and website checks; browser captures have a
-separate worker limit. Each queued scan keeps its chosen count, so editing a
+also controls subsequent DNS parking checks. HTTP/text checks and browser
+captures have separate worker limits. Each queued scan keeps its chosen count, so editing a
 client affects scans queued afterward. The run page shows the count used.
 
 To change the Docker server default for clients that inherit it:
@@ -286,6 +286,20 @@ must belong to domains that resolve in the completed DNS results; accepted
 findings still publish together at the end. Stop scan discards unfinished work.
 The dnspython alternative remains DNS-first. Live pipeline progress displays
 separate DNS, web-check and capture counts.
+
+## Browser performance
+
+Open **Screenshot and report policy → Website and browser performance** to set
+concurrent browser captures (1–32), per-page timeout (5–180 seconds), screenshot
+wait (0–30 seconds), and independent HTTP/text concurrency (1–128). Blank values
+inherit the server defaults shown next to the fields. New scans freeze effective
+settings at queue time, including scheduled scans; settings are shown in run
+headers and browser progress. Existing queued/running scans keep their values.
+
+Defaults remain 4 browser captures, a 60-second page timeout, a 3-second screenshot
+wait and 24 HTTP/text checks. Start with 8 browser captures and a 1-second wait if
+your hardware allows; shorter waits/timeouts can miss late content or slow pages.
+See [performance settings and build commands](../docs/PERFORMANCE.md).
 
 ## Follow an actual scan
 

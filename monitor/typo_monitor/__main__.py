@@ -49,10 +49,17 @@ def parser():
     p.add_argument("--no-screenshots", action="store_true", help="Explicitly skip browser captures; DNS monitoring continues")
     p.add_argument("--gowitness-path", help="Path to Gowitness 3.2.2")
     p.add_argument("--chrome-path", help="Path to Chrome/Chromium for captures")
-    p.add_argument("--capture-workers", type=int, default=4, help="Concurrent browser captures")
+    p.add_argument("--capture-workers", type=int, default=os.environ.get("TYPO_CAPTURE_WORKERS", "4"),
+                   help="Concurrent browser captures, 1–32 (TYPO_CAPTURE_WORKERS, otherwise 4)")
+    p.add_argument("--capture-page-timeout", type=int, default=os.environ.get("TYPO_CAPTURE_PAGE_TIMEOUT", "60"),
+                   help="Browser timeout per page in seconds, 5–180 (TYPO_CAPTURE_PAGE_TIMEOUT)")
+    p.add_argument("--capture-delay", type=int, default=os.environ.get("TYPO_CAPTURE_DELAY", "3"),
+                   help="Wait before screenshotting in seconds, 0–30 (TYPO_CAPTURE_DELAY)")
+    p.add_argument("--web-workers", type=int, default=os.environ.get("TYPO_WEB_WORKERS", "24"),
+                   help="Concurrent HTTP/title/text checks, 1–128; independent of DNS (TYPO_WEB_WORKERS)")
     p.add_argument("--web-timeout", type=float, default=os.environ.get("TYPO_WEB_TIMEOUT", 3),
                    help="HTTP/HTTPS response check timeout in seconds (TYPO_WEB_TIMEOUT, otherwise 3)")
-    p.add_argument("--capture-timeout", type=float, default=900,
+    p.add_argument("--capture-timeout", type=float, default=os.environ.get("TYPO_CAPTURE_TIMEOUT", "900"),
                    help="Capture drain deadline after streamed input closes; whole invocation deadline in DNS-first mode, seconds")
     p.add_argument("--capture-driver", choices=["gorod", "chromedp"], default="gorod")
     commands = p.add_subparsers(dest="command", required=True)
@@ -119,7 +126,8 @@ def main(argv=None):
         capturer = None if args.no_screenshots else GowitnessCapture(
             executable=args.gowitness_path, chrome_path=args.chrome_path,
             timeout=args.capture_timeout, threads=args.capture_workers, driver=args.capture_driver,
-            probe_timeout=args.web_timeout)
+            probe_timeout=args.web_timeout, probe_workers=args.web_workers,
+            page_timeout=args.capture_page_timeout, screenshot_delay=args.capture_delay)
         if args.discovery_engine not in {"combined", "amass", "subfinder", "assetfinder"}:
             raise ValueError("TYPO_DISCOVERY_ENGINE must be combined, amass, subfinder or assetfinder.")
         if args.discovery_engine == "combined":

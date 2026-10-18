@@ -483,9 +483,9 @@ class Store:
             db.execute("UPDATE projects SET capture_filter_json=? WHERE id=?", (_json(policy), project_id))
         return policy
 
-    def set_capture_policy(self, project_id, *, mode, refresh_days, comparison="text"):
+    def set_capture_policy(self, project_id, *, mode, refresh_days, comparison="text", **performance):
         from .capture_changes import normalize_policy
-        policy = normalize_policy(mode, refresh_days, comparison)
+        policy = normalize_policy(mode, refresh_days, comparison, **performance)
         with self._connection(write=True) as db:
             self._require_project(db, project_id)
             db.execute("UPDATE projects SET capture_policy_json=? WHERE id=?", (_json(policy), project_id))
@@ -722,7 +722,7 @@ class Store:
             return {row[0] for row in db.execute(
                 "SELECT seed FROM generation_markers WHERE project_id=? AND signature=?", (project_id, signature))}
 
-    def start_run(self, project_id, *, dns_workers=None, discovery_mode=None, proxy_status=None, dns_route_key="direct", capture_mode=None):
+    def start_run(self, project_id, *, dns_workers=None, discovery_mode=None, proxy_status=None, dns_route_key="direct", capture_mode=None, capture_defaults=None):
         dns_workers = self._dns_workers(dns_workers)
         with self._connection(write=True) as db:
             project = self._require_project(db, project_id)
@@ -735,10 +735,15 @@ class Store:
                 raise RuntimeError("A scan is already running for this project.")
             from .title_filter import combine_policies
             capture_filter = combine_policies(self._global_capture_filter(db), json.loads(project["capture_filter_json"]))
-            from .capture_changes import normalize_policy
+            from .capture_changes import normalize_policy, PERFORMANCE_DEFAULTS
             capture_policy = normalize_policy(**json.loads(project["capture_policy_json"]))
             if capture_mode is not None:
-                capture_policy = normalize_policy(capture_mode, capture_policy["refresh_days"], capture_policy["comparison"])
+                capture_policy = normalize_policy(**{**capture_policy, "mode": capture_mode})
+            defaults = normalize_policy(**{**PERFORMANCE_DEFAULTS, **(capture_defaults or {})})
+            for field in PERFORMANCE_DEFAULTS:
+                if capture_policy[field] is None:
+                    capture_policy[field] = defaults[field]
+            capture_policy = normalize_policy(**capture_policy)
             run_id = str(uuid4())
             db.execute("""INSERT INTO runs(id,project_id,status,started_at,dns_workers,discovery_mode,proxy_status_json,dns_route_key,capture_filter_json,capture_policy_json)
                 VALUES(?,?, 'running', ?,?,?,?,?,?,?)""",

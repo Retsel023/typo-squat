@@ -17,7 +17,7 @@ that stage. This is not an overall scan percentage.
 **DNS concurrency** controls MassDNS's simultaneous questions (`-s`), from 1 to
 128. It is not a process/thread count. Each run freezes the saved client setting,
 or the server default (`--workers`, `TYPO_DNS_WORKERS`, otherwise 24). The same
-setting bounds later parking and website checks. Gowitness has its own capture
+setting bounds later parking checks. HTTP/text checks and Gowitness have independent
 concurrency. This is an outstanding-request limit, not a queries-per-second
 limit: fast positive or negative replies can still produce high throughput.
 
