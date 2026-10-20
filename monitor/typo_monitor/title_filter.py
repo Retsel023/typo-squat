@@ -12,9 +12,10 @@ import requests
 from urllib3.exceptions import HTTPError as UrllibError
 from urllib3.util import Timeout
 
+from .title_evidence import MAX_TITLE_CHARS
+
 
 MAX_HTML_BYTES = 64 * 1024
-MAX_TITLE_CHARS = 1024
 MAX_REDIRECTS = 3
 TITLE_STATUSES = frozenset({"disabled", "found", "missing", "truncated", "non_html", "encoded",
                             "timeout", "read_error", "redirect_limit", "unsupported_redirect"})

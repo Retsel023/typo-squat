@@ -1080,17 +1080,24 @@ class Store:
         The selected rows remain intact; no synthetic historical page is made.
         """
         from .page_text import EXTRACTION_VERSION
+        from .title_evidence import comparison_title
         responsive = "json_extract(c.preflight_json,'$.status')='http_response'"
         known_title = responsive + """ AND json_extract(c.preflight_json,'$.title_http_status') BETWEEN 200 AND 299
             AND ((json_extract(c.preflight_json,'$.title_status')='found'
                   AND length(json_extract(c.preflight_json,'$.title'))>0)
                  OR (json_extract(c.preflight_json,'$.title_status')='missing'
                      AND coalesce(length(json_extract(c.preflight_json,'$.title')),0)=0))"""
+        observed_title = """((json_extract(c.preflight_json,'$.status')='http_response'
+                AND json_extract(c.preflight_json,'$.title_http_status') BETWEEN 200 AND 299
+                AND json_extract(c.preflight_json,'$.title_status')='found'
+                AND meaningful_title(c.domain,json_extract(c.preflight_json,'$.title')))
+            OR (c.status='captured' AND c.http_status BETWEEN 200 AND 299
+                AND meaningful_title(c.domain,c.title)))"""
         selectors = (
             ("previous", "1", ()),
             ("connection", "json_extract(c.preflight_json,'$.status') IN ('http_response','no_http_response')", ()),
             ("endpoint", responsive, ()),
-            ("title", known_title, ()),
+            ("title", observed_title, ()),
             ("text", known_title + """ AND json_extract(c.preflight_json,'$.content_status')='complete'
                 AND length(json_extract(c.preflight_json,'$.page_text'))>0
                 AND length(json_extract(c.preflight_json,'$.text_sha256'))=64
@@ -1099,6 +1106,10 @@ class Store:
             ("image", "c.status='captured'", ()),
         )
         with self._connection() as db:
+            # Filter address placeholders before ranking so they cannot hide
+            # an older meaningful title. Only title strings enter Python.
+            db.create_function("meaningful_title", 2,
+                lambda domain, title: bool(comparison_title(title, domain)), deterministic=True)
             db.execute("BEGIN")
             baselines, decoded = {}, {}
             for kind, condition, parameters in selectors:

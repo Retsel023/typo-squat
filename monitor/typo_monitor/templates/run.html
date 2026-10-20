@@ -29,11 +29,13 @@
     <div class="context-updates">{% for group in text_notes %}<details class="context-update"><summary><strong>{{ group.domain }}</strong><span class="context-protocols">{{ group.schemes|join(' + ')|upper }}</span><span class="badge neutral">Lower priority</span></summary>
       <p><a class="text-link" href="{{ url_for('candidate_detail', project_id=project.id, domain=group.domain) }}">Domain history ↗</a></p>
       {% for item in group.captures %}{% set capture = item.capture %}{% set probe = capture.preflight %}<section class="context-protocol">
-        <h4>{{ capture.scheme|upper }} · {{ probe.get('title') or 'No HTML title' }}</h4><p>{{ item.review_reason }}</p>
+        <h4>{{ capture.scheme|upper }} · {{ item.observed_title or 'Title unavailable' }}</h4>{% if item.title_source == 'gowitness' %}<p class="field-help">Title recovered from Gowitness</p>{% endif %}<p>{{ item.review_reason }}</p>
         {% if item.shared_context_with %}<p>Saved page context matches {{ item.shared_context_with|upper }} below.</p>{% elif probe.get('page_text') %}<p class="field-help">Saved page context · {{ probe.get('content_status', 'Not recorded') }}</p><pre class="page-text-evidence">{{ probe.page_text }}</pre>{% else %}<p>Readable page context was not available. This observation still needs verification.</p>{% endif %}
         {% if probe.get('text_diff') %}<details class="diagnostic"><summary>Text changes · previous → current</summary><pre class="page-text-evidence">{{ probe.text_diff }}</pre></details>{% endif %}
         <details class="diagnostic"><summary>Observation details</summary>
-          <p>Recorded change: {{ probe.get('web_change', 'Not recorded')|replace('_', ' ') }} · {{ probe.get('structure_match_reason', 'Layout comparison unavailable')|replace('_', ' ') }}{% if probe.get('layout_similarity') is not none %} · {{ probe.layout_similarity }}% structural overlap{% endif %}.</p>
+          <p>Website observation: {{ (item.web_change or 'Not recorded')|replace('_', ' ') }} · {{ probe.get('structure_match_reason', 'Layout comparison unavailable')|replace('_', ' ') }}{% if probe.get('layout_similarity') is not none %} · {{ probe.layout_similarity }}% structural overlap{% endif %}.</p>
+          <p>HTML title check: {{ probe.get('title_status', 'Not recorded')|replace('_', ' ') }} · {{ probe.get('title') or 'No HTML title obtained' }}.</p>
+          <p>Original browser title: {{ capture.title or 'Unavailable' }}.</p>{% if item.title_status == 'address_only' %}<p>This title contains only the site's address and is ignored as title-change evidence.</p>{% endif %}
           <p>{{ probe.get('links_count', 0) }} links · {{ probe.get('forms_count', 0) }} form/field details. A lower-priority entry does not establish that the rendered appearance was unchanged.</p>
           {% if probe.get('forms') %}<pre class="page-text-evidence">{{ probe.forms|join('\n') }}</pre>{% endif %}
           <p>{% if capture.status == 'captured' %}An image was captured and retained in domain history.{% elif capture.status == 'skipped' %}{{ capture|capture_status }}.{% else %}{{ capture|capture_status }} · {{ capture.error or 'No image is available.' }}{% endif %}</p>
@@ -65,7 +67,7 @@
         <td>{{ capture.scheme|upper }}</td>
         <td>{{ capture|capture_status }}<p>{{ capture.captured_at|date }}</p></td>
         <td class="capture-history-detail">{{ capture.error or 'No saved image is available for this observation.' }}<p>{{ item.reason }} · HTTP {{ capture.preflight.get('title_http_status') or capture.http_status or '?' }}</p>
-          {% if item.after_title %}<p>HTML title: {{ item.after_title }}</p>{% endif %}
+          {% if item.after_title %}<p>Title{% if item.title_source == 'gowitness' %} · recovered from Gowitness{% endif %}: {{ item.after_title }}</p>{% endif %}
           <details class="diagnostic"><summary>Capture decision</summary><p>{{ item.capture_reason }}</p><p>Previous title: {{ item.before_title or 'No comparable title' }}</p>{% if capture.preflight.get('text_diff') %}<pre class="page-text-evidence">{{ capture.preflight.text_diff }}</pre>{% endif %}</details>
         </td>
       </tr>{% endfor %}

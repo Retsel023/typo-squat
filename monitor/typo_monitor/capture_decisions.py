@@ -59,6 +59,7 @@ class CaptureDecisionLog:
         probe = row.get("preflight", {})
         return {"url": row["url"], "html_title": probe.get("title"),
                 "html_title_status": probe.get("title_status", "disabled"),
+                "title_resolution": probe.get("title_resolution"),
                 "html_filter": probe.get("title_filter"),
                 "body_status": probe.get("body_status", "not_recorded"),
                 "body_bytes_read": probe.get("title_bytes"),

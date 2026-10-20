@@ -370,6 +370,8 @@ def _validate_metadata(metadata, workdir, requested, check_shutdown, *, title_fi
             row["error"] = f"Screenshot artifact rejected: {error}"
             continue
         row.update(status="captured", relative_path=relative_path, error=None)
+        from .capture_changes import reconcile_browser_title
+        reconcile_browser_title(row)
     return malformed, foreign, duplicates
 
 

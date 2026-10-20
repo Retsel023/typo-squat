@@ -7,6 +7,8 @@ import hashlib
 import json
 import textwrap
 
+from .title_evidence import MAX_TITLE_CHARS, comparison_title
+
 
 PERFORMANCE_LIMITS = {"browser_workers": (1, 32), "page_timeout": (5, 180),
                       "screenshot_delay": (0, 30), "web_workers": (1, 128)}
@@ -56,6 +58,78 @@ def _complete(row):
     return (row.get("status") == "http_response" and 200 <= (row.get("title_http_status") or 0) < 300
             and (row.get("title_status") == "found" and bool(row.get("title"))
                  or row.get("title_status") == "missing" and not row.get("title")))
+
+
+def observed_title(capture):
+    """Prefer HTML; use a verified successful Gowitness result as backup.
+
+    Never insert a rendered title into static HTML/text fingerprints or use a
+    failed/unverified browser result as title evidence. Works on saved rows too.
+    """
+    probe = capture.get("preflight", {})
+    domain = capture.get("domain", "")
+    html_title = comparison_title(probe.get("title"), domain)
+    html_found = _complete(probe) and probe.get("title_status") == "found" and bool(html_title)
+    browser_title = comparison_title(capture.get("title"), domain)
+    browser_found = (capture.get("status") == "captured" and 200 <= (capture.get("http_status") or 0) < 300
+                     and bool(browser_title))
+    if html_found:
+        return {"title": html_title, "status": "found", "source": "html"}
+    if browser_found:
+        return {"title": browser_title, "status": "found", "source": "gowitness"}
+    address_only = (_complete(probe) and probe.get("title_status") == "found" and bool(probe.get("title"))
+        and len(probe["title"]) <= MAX_TITLE_CHARS and not html_title
+        or capture.get("status") == "captured" and 200 <= (capture.get("http_status") or 0) < 300
+        and bool(capture.get("title")) and len(capture["title"]) <= MAX_TITLE_CHARS and not browser_title)
+    if address_only:
+        return {"title": None, "status": "address_only", "source": "none"}
+    status = probe.get("title_status", "unavailable")
+    return {"title": None, "status": "unavailable" if status == "found" else status, "source": "html"}
+
+
+def _title_changed(capture, title):
+    probe = capture.get("preflight", {})
+    old_title = comparison_title(probe.get("previous_known_title", probe.get("previous_title")),
+                                 capture.get("domain", ""))
+    old_status = probe.get("previous_known_title_status", probe.get("previous_title_status"))
+    return (title["status"] == "found" and (old_status == "missing" or old_status == "found" and bool(old_title))
+            and title["title"] != old_title)
+
+
+def resolved_change(capture):
+    """Reconcile a pre-browser title comparison using actual browser evidence."""
+    probe = capture.get("preflight", {})
+    change = probe.get("web_change")
+    title = observed_title(capture)
+    if _title_changed(capture, title):
+        return "title_changed"
+    # New runs preserve the independent content decision. Older accepted rows
+    # can be reconciled from their saved diff/hashes, without changing the DB.
+    if change == "title_changed":
+        if probe.get("content_change"):
+            change = probe["content_change"]
+        elif probe.get("structure_comparison") == "changed":
+            change = "structure_changed"
+        elif probe.get("text_diff"):
+            change = "text_changed"
+        elif probe.get("content_sha256") and probe.get("previous_content_sha256"):
+            change = "unchanged" if probe["content_sha256"] == probe["previous_content_sha256"] else "structure_changed"
+        else:
+            change = "title_unavailable" if title["status"] != "found" else "title_recovered"
+    if change == "first_title_observation" and title["status"] != "found":
+        return "title_unavailable"
+    return change
+
+
+def reconcile_browser_title(capture):
+    """Finalize derived metadata after Gowitness/artifact validation only."""
+    title = observed_title(capture)
+    probe = capture.setdefault("preflight", {})
+    probe["title_resolution"] = title
+    change = resolved_change(capture)
+    if change != probe.get("web_change"):
+        probe["html_web_change"] = probe.get("web_change")
+        probe["web_change"] = change
 
 
 def _endpoint_complete(row):
@@ -127,12 +201,14 @@ def compare(capture, domain, row, diagnostic):
     current_comparable = text_complete(diagnostic) if text_mode else _complete(diagnostic)
     latest, image = baseline.get("previous"), baseline.get("image")
     latest_probe = (latest or {}).get("preflight", {})
-    title_old = baseline.get("title") or (latest if _complete(latest_probe) else None)
+    title_old = baseline.get("title") or (latest if observed_title(latest or {})["status"] == "found" or _complete(latest_probe) else None)
     text_old = baseline.get("text") or (latest if text_complete(latest_probe)
         and latest_probe.get("content_version") == diagnostic.get("content_version") else None)
     old = (text_old if text_mode else title_old) or latest
     previous = (old or {}).get("preflight", {})
-    title_previous = (title_old or {}).get("preflight", {})
+    title_evidence = observed_title(title_old or {})
+    text_title_evidence = observed_title(text_old or {})
+    current_title = observed_title({"domain": domain, "preflight": diagnostic})
     connection_old = baseline.get("connection") or (latest if latest_probe.get("status")
         in {"http_response", "no_http_response"} else None)
     connection_previous = (connection_old or {}).get("preflight", {})
@@ -151,13 +227,16 @@ def compare(capture, domain, row, diagnostic):
                       previous_content_status=previous.get("content_status"),
                       previous_duplicate_body_of=(latest or {}).get("preflight", {}).get("duplicate_body_of"),
                       previous_run_id=(old or {}).get("run_id"),
-                      previous_known_title=title_previous.get("title"),
-                      previous_known_title_status=title_previous.get("title_status"),
+                      previous_known_title=title_evidence["title"],
+                      previous_known_title_status=title_evidence["status"],
+                      previous_known_title_source=title_evidence["source"],
                       previous_endpoint={key: final_endpoint_previous.get(key) for key in
                                          ("title_url", "http_status", "title_http_status", "tls_verified")})
     diagnostic["comparison_baselines"] = {kind: reference(evidence) for kind, evidence in
         (("title", title_old), ("text", text_old if text_mode else None),
          ("connection", connection_old), ("endpoint", final_endpoint_old)) if evidence}
+    if title_old and title_evidence["source"] == "gowitness":
+        diagnostic["comparison_baselines"]["title"].update(source="gowitness", checked_at=title_old.get("captured_at"))
     diagnostic["previous_content_sha256"] = previous.get("content_sha256")
     current_forms, previous_forms = _form_signature(diagnostic), _form_signature(previous)
     diagnostic["form_change"] = ("changed" if current_forms != previous_forms else "unchanged") if current_forms and previous_forms else None
@@ -167,7 +246,8 @@ def compare(capture, domain, row, diagnostic):
     stable_structure = (text_mode and text_complete(diagnostic) and text_complete(previous)
         and diagnostic.get("content_version") == previous.get("content_version")
         and structure["status"] in {"unchanged", "largely_unchanged"} and _same_endpoint(diagnostic, previous)
-        and _complete(title_previous) and diagnostic.get("title") == title_previous.get("title") == previous.get("title")
+        and title_evidence["status"] in {"found", "missing", "address_only"}
+        and current_title["title"] == title_evidence["title"] == text_title_evidence["title"]
         and _route_key(baseline.get("text_route", {})) == _route_key(getattr(capture, "capture_route", {})))
     if not previous:
         if current_comparable:
@@ -182,10 +262,11 @@ def compare(capture, domain, row, diagnostic):
             diagnostic["text_diff"] = compact_diff(previous["page_text"], diagnostic["page_text"])
     elif text_mode and text_complete(diagnostic):
         diagnostic["web_change"] = "first_text_observation"
-    elif not text_mode and _complete(diagnostic) and _complete(title_previous):
+    elif not text_mode and _complete(diagnostic) and title_evidence["status"] in {"found", "missing", "address_only"}:
         diagnostic["web_change"] = "unchanged"
-    elif not text_mode and _complete(diagnostic) and not _complete(title_previous):
+    elif not text_mode and _complete(diagnostic) and current_title["status"] == "found":
         diagnostic["web_change"] = "first_title_observation"
+    diagnostic["content_change"] = diagnostic["web_change"]
 
     # Compare title/endpoint evidence independently of the text baseline: a
     # later title-only scan can update a title without erasing older full text.
@@ -196,8 +277,7 @@ def compare(capture, domain, row, diagnostic):
             and _endpoint_changed(diagnostic, final_endpoint_previous)):
         endpoint_changed = True
     diagnostic["endpoint_change"] = "endpoint_changed" if endpoint_changed else None
-    if (_complete(diagnostic) and _complete(title_previous)
-            and diagnostic.get("title") != title_previous.get("title")):
+    if _complete(diagnostic) and _title_changed({"domain": domain, "preflight": diagnostic}, current_title):
         diagnostic["web_change"] = "title_changed"
     if {diagnostic["status"], connection_previous.get("status")} == {"http_response", "no_http_response"}:
         diagnostic["connection_change"] = ("became_available" if diagnostic["status"] == "http_response"
@@ -233,7 +313,7 @@ def compare(capture, domain, row, diagnostic):
         and previous.get("skip_reason") in {"unchanged_content", "text_only_update", "minor_content_update", "unchanged_structure"}
         or image_probe.get("content_sha256") == previous.get("content_sha256")
         and image_probe.get("content_version") == previous.get("content_version")
-        and image_probe.get("title") == previous.get("title") and _same_endpoint(image_probe, previous))
+        and observed_title(image)["title"] == text_title_evidence["title"] and _same_endpoint(image_probe, previous))
     exact_content = (text_complete(image_probe) and image_probe.get("content_sha256") == diagnostic.get("content_sha256")
         and image_probe.get("content_version") == diagnostic.get("content_version"))
     if text_mode:
@@ -250,7 +330,7 @@ def compare(capture, domain, row, diagnostic):
             diagnostic["web_change"] = "structure_changed"
     else:
         comparable = _complete(image_probe)
-    if (not comparable or image_probe.get("title") != diagnostic.get("title")
+    if (not comparable or observed_title(image)["title"] != current_title["title"]
             or not _same_endpoint(diagnostic, image_probe)):
         return recapture("image_baseline_mismatch")
     # Moving the website stage to another proxy is a fresh browser baseline.
@@ -372,7 +452,10 @@ def website_text_notes(captures):
             selected[(capture["domain"], capture["scheme"])] = capture, source[1]
     for capture, reason in selected.values():
         group = groups.setdefault(capture["domain"], {"domain": capture["domain"], "captures": [], "schemes": []})
-        group["captures"].append({"capture": capture, "review_reason": reason})
+        title = observed_title(capture)
+        group["captures"].append({"capture": capture, "review_reason": reason, "observed_title": title["title"],
+                                  "title_status": title["status"],
+                                  "title_source": title["source"], "web_change": resolved_change(capture)})
         group["schemes"].append(capture["scheme"])
     for group in groups.values():
         group["captures"].sort(key=lambda item: item["capture"]["scheme"])
@@ -382,7 +465,7 @@ def website_text_notes(captures):
             capture = item["capture"]
             probe = capture.get("preflight", {})
             if text_complete(probe):
-                identity = (probe["content_sha256"], probe.get("title"))
+                identity = (probe["content_sha256"], item["observed_title"])
                 if identity in seen:
                     item["shared_context_with"] = seen[identity]
                 else:
@@ -398,14 +481,10 @@ def review_priority(capture):
     drastic visual change; its uncertainty stays explicit in the context log.
     """
     probe = capture.get("preflight", {})
-    change = probe.get("web_change")
+    change = resolved_change(capture)
     if change in {"first_observation", "first_title_observation", "first_text_observation"}:
         return "new", "First comparable website observation"
-    old_title = probe.get("previous_known_title", probe.get("previous_title"))
-    old_title_status = probe.get("previous_known_title_status", probe.get("previous_title_status"))
-    title_changed = (_complete(probe) and old_title_status in {"found", "missing"}
-                     and probe.get("title") != old_title)
-    if change == "title_changed" or title_changed:
+    if change == "title_changed":
         return "major", "Website title changed"
     if probe.get("form_change") == "changed":
         return "major", "Form actions or field purposes changed"
@@ -422,6 +501,10 @@ def review_priority(capture):
         if probe.get("content_sha256") and probe["content_sha256"] == probe.get("previous_content_sha256"):
             return "context", "Page context unchanged · structure or resource details differ"
         return "context", "Structure or linked-content details changed · drastic change unconfirmed"
+    if change == "title_recovered":
+        return "context", "HTML title recovered from Gowitness · title matches history"
+    if change == "title_unavailable":
+        return "context", "No meaningful title recovered · title change unconfirmed"
     return "other", "No new high-priority website change recorded"
 
 
@@ -439,7 +522,7 @@ def report_entries(captures, mode="changes", *, include_context=False):
             continue
         if mode == "changes" and probe.get("skip_reason") in {"unchanged_title", "unchanged_content", "unchanged_structure", "text_only_update", "minor_content_update"}:
             continue
-        change = probe.get("web_change")
+        change = resolved_change(capture)
         label = CHANGE_LABELS.get(change)
         capture_reason = probe.get("capture_reason")
         if mode == "changes" and change not in CONTENT_CHANGE_KINDS:
@@ -450,12 +533,15 @@ def report_entries(captures, mode="changes", *, include_context=False):
         companion = by_key.get((capture["domain"], probe.get("body_shared_with")))
         if companion and companion.get("preflight", {}).get("duplicate_body_of") != capture["scheme"]:
             companion = None
+        title = observed_title(capture)
         entries.append({"capture": capture, "reason": review_reason if mode == "changes" and priority == "major" else label or "Full report entry",
                         "review_priority": priority, "review_reason": review_reason,
+                        "web_change": change, "title_source": title["source"], "title_status": title["status"],
                         "schemes": ["http", "https"] if companion else [capture["scheme"]],
                         "protocol_observations": [capture, companion] if companion else [],
                         "capture_reason": CAPTURE_REASONS.get(capture_reason,
                             "This older scan did not record why the browser was requested."),
-                        "before_title": probe.get("previous_known_title", probe.get("previous_title")), "after_title": probe.get("title"),
+                        "before_title": comparison_title(probe.get("previous_known_title", probe.get("previous_title")), capture["domain"]),
+                        "after_title": title["title"],
                         "previous_run_id": probe.get("previous_run_id")})
     return entries

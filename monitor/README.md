@@ -288,6 +288,30 @@ its 512-pattern/depth/time bounds, exact comparison remains the fallback. Resour
 file contents and browser-rendered layout are not fetched/compared. Screenshots
 remain for manual visual review.
 
+When the HTML title check misses a title, a successful, verified Gowitness
+capture can supply its recorded title as a fallback. The adapter already reads
+Gowitness's structured JSONL results; the fallback reuses that saved result and
+needs no additional HTTP lookup or scan. Reports label it **Recovered from
+Gowitness**, including saved reports whose capture row already contains the title.
+The static title/status, fetched text and HTML fingerprints remain separate.
+
+Title comparisons use the recovered value: a title matching history no longer
+counts as a title change merely because the HTML check returned none. Independent
+text, form and layout differences still apply, and a genuinely different recovered
+title remains a title change. Future historical title baselines select the latest
+nonempty reliable HTML or successful browser title; an empty lookup cannot erase
+that positive observation. Failed, unverified, non-2xx or empty browser results
+are not title fallbacks. The original browser-request reason remains recorded.
+
+The scanned hostname (including its `www`/IDN spelling, scheme, port and URL
+path) is removed from derived title comparisons. Address-only values such as
+`fv2.nl` or `fvp.fr/en-us` are unavailable titles, not evidence of a changed
+title. Meaningful wording such as a provider name remains comparable. Historical
+title selection skips these placeholders so an older real title stays available.
+Saved reports apply the same rule when displayed; original HTML/browser titles
+remain in observation details and storage. Independent form/layout changes can
+still make an entry a priority change.
+
 Each report entry has **Capture decision**, explaining full mode, periodic
 refresh, an uncertain check, a missing/mismatched image baseline or a changed
 proxy route. Older scans without decision metadata say it was not recorded.
