@@ -67,6 +67,8 @@ class CaptureDecisionLog:
                 "body_template_replacements": probe.get("body_template_replacements", 0),
                 "body_content_group_version": probe.get("body_content_group_version"),
                 "body_content_group_status": probe.get("body_content_group_status", "not_recorded"),
+                "page_structure_status": probe.get("page_structure_status", "not_recorded"),
+                "structure_comparison": probe.get("structure_comparison", "not_recorded"),
                 "body_content_group_ignored_consent": probe.get("body_content_group_ignored_consent", 0),
                 "website_status": probe.get("status"),
                 "final_html_url": probe.get("title_url"),

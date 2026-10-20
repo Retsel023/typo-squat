@@ -921,6 +921,8 @@ class Store:
                 counts["screenshots_browser_title_filtered"] = sum(attempt["preflight"].get("report_exclusion") == "browser_title_rule" for _, attempt in attempts)
                 counts["screenshots_body_duplicates"] = sum(attempt["preflight"].get("skip_reason") == "duplicate_body" for _, attempt in attempts)
                 counts["screenshots_text_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_content" for _, attempt in attempts)
+                counts["screenshots_text_only_updates"] = sum(attempt["preflight"].get("skip_reason") == "text_only_update" for _, attempt in attempts)
+                counts["screenshots_structure_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_structure" for _, attempt in attempts)
                 counts["screenshots_title_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_title" for _, attempt in attempts)
                 from .capture_changes import report_entries
                 counts["website_changes"] = len(report_entries(
@@ -1121,6 +1123,8 @@ class Store:
                     baseline[kind] = evidence
                     if kind == "image":
                         baseline["route"] = route
+                    elif kind == "text":
+                        baseline["text_route"] = route
             return baselines
 
     def latest_successful_capture(self, project_id, domain, scheme):

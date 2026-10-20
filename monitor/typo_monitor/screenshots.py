@@ -93,6 +93,18 @@ def _validated_preflight(diagnostics, requested):
                 or (body_status == "complete") != (body_hash is not None)):
             raise ValueError("Invalid complete-body fingerprint metadata.")
         validated[url].update(body_sha256=body_hash, body_content_type=body_type, body_status=body_status)
+        from .page_structure import STRUCTURE_VERSION, STRUCTURE_STATUSES
+        structure_hash = entry.get("page_structure_sha256")
+        structure_version = entry.get("page_structure_version")
+        structure_status = entry.get("page_structure_status", "unavailable")
+        if (structure_hash is not None and (body_status != "complete" or not isinstance(structure_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", structure_hash) or structure_version != STRUCTURE_VERSION)
+                or structure_hash is None and structure_version is not None
+                or not isinstance(structure_status, str) or structure_status not in STRUCTURE_STATUSES
+                or (structure_status == "complete") != (structure_hash is not None)):
+            raise ValueError("Invalid complete static page structure metadata.")
+        validated[url].update(page_structure_sha256=structure_hash, page_structure_version=structure_version,
+                              page_structure_status=structure_status)
         template_hash = entry.get("body_template_sha256")
         template_version = entry.get("body_template_version")
         template_count = entry.get("body_template_replacements", 0)
@@ -174,7 +186,9 @@ def _apply_preflight(capture, row, diagnostic, domain):
                    captured_at=diagnostic["checked_at"])
         return False
     if unchanged:
-        reason = "Page text unchanged" if diagnostic.get("skip_reason") == "unchanged_content" else "Title unchanged"
+        reason = {"unchanged_content": "Page content unchanged", "unchanged_title": "Title unchanged",
+                  "text_only_update": "Only wording changed; static structure and title unchanged",
+                  "unchanged_structure": "Static structure and title unchanged"}[diagnostic["skip_reason"]]
         row.update(status="skipped", error=reason + "; no new screenshot requested.",
                    captured_at=diagnostic["checked_at"])
         return False
@@ -236,10 +250,10 @@ def _deduplicate_protocols(capture, rows, eligible):
         # A deliberately skipped protocol must not force its missing image
         # to be captured on the next unchanged scan. The other protocol has
         # already passed compare()'s saved-image, route and age checks.
-        if not (changes and probe.get("web_change") == "unchanged"
+        if not (changes and probe.get("web_change") in {"unchanged", "text_only_update"}
                 and probe.get("capture_reason") == "image_baseline_missing"
                 and probe.get("previous_duplicate_body_of") == source["scheme"]
-                and baseline.get("skip_reason") in {"unchanged_title", "unchanged_content"}):
+                and baseline.get("skip_reason") in {"unchanged_title", "unchanged_content", "unchanged_structure", "text_only_update"}):
             note("matched_capture_separate", "other_protocol_not_eligible_for_shared_capture")
             return
     note("matched", "shared_current_capture" if eligible.get(source["url"]) else "paired_unchanged_image_baseline")
@@ -498,6 +512,8 @@ class GowitnessCapture:
         title_filtered = sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for row in rows)
         title_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for row in rows)
         text_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for row in rows)
+        text_only_updates = sum(row.get("preflight", {}).get("skip_reason") == "text_only_update" for row in rows)
+        structure_unchanged = sum(row.get("preflight", {}).get("skip_reason") == "unchanged_structure" for row in rows)
         body_duplicates = sum(row.get("preflight", {}).get("skip_reason") == "duplicate_body" for row in rows)
         browser_filtered = sum(row.get("preflight", {}).get("report_exclusion") == "browser_title_rule" for row in rows)
         if title_filtered:
@@ -506,6 +522,10 @@ class GowitnessCapture:
             detail += f" {title_unchanged} endpoints had unchanged titles and did not request screenshots."
         if text_unchanged:
             detail += f" {text_unchanged} endpoints had unchanged page text and did not request screenshots."
+        if text_only_updates:
+            detail += f" {text_only_updates} wording-only updates skipped Gowitness; text diffs were retained."
+        if structure_unchanged:
+            detail += f" {structure_unchanged} endpoints still matched their static structure/title baseline and skipped Gowitness."
         if body_duplicates:
             detail += f" {body_duplicates} duplicate browser requests skipped for matching HTTP/HTTPS bodies."
         if browser_filtered:
@@ -515,12 +535,14 @@ class GowitnessCapture:
                 "attempts": len(rows), "captured": captured,
                 "failed": sum(row["status"] == "failed" for row in rows),
                 "unavailable": sum(row["status"] == "unavailable" for row in rows),
-                "eligible": counts["http_response"] - title_filtered - title_unchanged - text_unchanged - body_duplicates,
+                "eligible": counts["http_response"] - title_filtered - title_unchanged - text_unchanged - text_only_updates - structure_unchanged - body_duplicates,
                 "title_filtered": title_filtered,
                 "browser_title_filtered": browser_filtered,
                 "body_duplicates": body_duplicates,
                 "title_unchanged": title_unchanged,
                 "text_unchanged": text_unchanged,
+                "text_only_updates": text_only_updates,
+                "structure_unchanged": structure_unchanged,
                 "titles_found": sum(row.get("preflight", {}).get("title_status") == "found" for row in rows),
                 "launched": sum(row.get("capture_queued", False) for row in rows),
                 "skipped": sum(row["status"] == "skipped" for row in rows),
@@ -593,6 +615,8 @@ class GowitnessCapture:
                                 "title_filtered": sum(row.get("preflight", {}).get("skip_reason") == "title_rule" for rows in results.values() for row in rows),
                                 "title_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_title" for rows in results.values() for row in rows),
                                 "text_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_content" for rows in results.values() for row in rows),
+                                "text_only_updates": sum(row.get("preflight", {}).get("skip_reason") == "text_only_update" for rows in results.values() for row in rows),
+                                "structure_unchanged": sum(row.get("preflight", {}).get("skip_reason") == "unchanged_structure" for rows in results.values() for row in rows),
                                 "skipped": sum(row["status"] == "skipped" for rows in results.values() for row in rows)}
             _report_progress(callback, "screenshots", current=0, total=len(requested), metrics=progress_metrics)
             if not requested:

@@ -226,21 +226,31 @@ does not change filtering or prevent a browser-only title's first capture.
 
 Routine scans default to **Changes only**. Every run refreshes DNS and
 HTTP/HTTPS checks; subdomain enumeration is independent. The project
-**Screenshot and report policy** now defaults to **Page text + titles + form/link
-details**, with **Titles only** available as a lighter option. Text mode reads
-up to 512 KiB of static HTML and retains at most 12,000 readable characters.
-Scripts, styles and hidden input values are excluded; whitespace is normalized.
-Case, digits and punctuation remain meaningful. Link destinations (including
-query strings), form actions and field purposes contribute to the fingerprint.
+**Screenshot and report policy** defaults to **Title + static structure**, with
+**Titles only** available as a lighter option. Text mode reads up to 512 KiB of
+static HTML and retains at most 12,000 readable characters. Complete HTML also
+gets a versioned structure fingerprint: element order, selected layout attributes,
+resource references, inline script/style code and form/link details. Visible prose,
+prose labels, nonces and hidden input values do not contribute to that structure
+fingerprint. Resource file contents and rendered layout are not fetched/compared.
 
-Unchanged content, title, HTTP endpoint and route can skip Gowitness only with
-a matching successful screenshot baseline still on disk. New/changed content,
-missing or mismatched image baselines, HTTP errors and incomplete/unreadable/sparse dynamic
-responses still reach the browser. Older reports without text need a fresh
-baseline once. An intervening failed screenshot does not force another capture
-when fresh comparable checks still match a valid older image. Screenshots remain
-for manual visual review; automated AI review
-uses complete new/changed text only, even if its screenshot failed.
+A wording-only change with the same complete static structure, title, endpoint
+and website route goes to a collapsed **Text-only updates** log. With a valid saved
+image baseline, changes-only scans skip Gowitness **before the browser queue**;
+this is not just report filtering. The text diff and its source report remain
+available. Later unchanged scans keep using that image baseline despite its older
+wording, instead of recapturing the page on the following run. New pages and
+changes to titles, structure, resources or form/link details remain browser-eligible.
+A structure change takes priority even when the readable text also changed.
+
+Full capture mode, configured periodic refreshes, missing/mismatched image
+baselines and incomplete/unreadable/sparse checks can still request screenshots.
+A text-only log row records the actual browser decision. Prior reports have no
+structure fingerprint, so fresh comparable observations are needed before a text
+change can be treated as wording-only. The old text hash remains compatible;
+existing reports and screenshots are preserved. Static markup cannot establish
+that a remotely updated CSS/image file or JavaScript-rendered layout is unchanged.
+Screenshots remain for manual visual review.
 
 Each report entry has **Capture decision**, explaining full mode, periodic
 refresh, an uncertain check, a missing/mismatched image baseline or a changed
@@ -271,8 +281,8 @@ observations; DNS totals appear underneath as side notes. DNS state and discover
 inventory already accumulate across runs. Changed IP answer sets remain in a
 collapsed **DNS side notes** section. HTTP destination/status, TLS and connection
 changes have their own collapsed network notes and cannot by themselves add
-a website-change card. Text/title/form/link differences still count; a familiar
-screenshot does not establish that those fetched observations matched. Older
+a website-change card. Title/structure/form/link differences still count;
+wording-only differences with complete matching structure evidence are logged separately. Older
 network-only entries also stay out of changes-only cards; stored evidence and
 full-report views are retained.
 

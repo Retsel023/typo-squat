@@ -33,6 +33,14 @@ def template_fingerprint(body, charset, hostname, *, url=None, title=None, check
     from .content_groups import main_content_fingerprint
     result = {"body_template_sha256": digest, "body_template_version": TEMPLATE_VERSION,
               "body_template_replacements": count}
+    from .page_structure import structure_fingerprint
+    try:
+        result.update(structure_fingerprint(text, url, check_budget))
+    except TimeoutError:
+        result.update(page_structure_status="budget", body_content_group_status="budget")
+        return result
+    except (ValueError, RecursionError):
+        result["page_structure_status"] = "unavailable"
     try:
         result.update(main_content_fingerprint(text, hostname, url, title, check_budget))
     except TimeoutError:

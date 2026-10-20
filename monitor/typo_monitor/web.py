@@ -135,6 +135,10 @@ def _capture_status(attempt):
         return f"HTML matches {source.upper()} · duplicate capture skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_content":
         return "Text unchanged · capture skipped"
+    if (attempt.get("preflight") or {}).get("skip_reason") == "text_only_update":
+        return "Wording-only update · Gowitness skipped"
+    if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_structure":
+        return "Structure and title unchanged · Gowitness skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_title":
         return "Title unchanged · no capture requested"
     if error.startswith("screenshot excluded by title rule:"):
@@ -701,7 +705,7 @@ def create_app(service):
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
         progress, outputs = live_data(run_id)
-        from .capture_changes import website_check_diagnostics, website_network_notes
+        from .capture_changes import website_check_diagnostics, website_network_notes, website_text_notes
         report_mode = run.get("capture_policy", {}).get("mode", "full")
         captures = service.store.list_run_captures(str(run_id))
         entries, website_groups = _website_report_groups(captures, report_mode)
@@ -718,6 +722,15 @@ def create_app(service):
         web_endpoint_total = sum(group["endpoint_count"] for group in website_entries)
         web_diagnostics = website_check_diagnostics(captures)
         network_notes = website_network_notes(captures)
+        text_notes = website_text_notes(captures)
+        text_page_arg = request.args.get("text_page", "1")
+        if (not text_page_arg.isascii() or not text_page_arg.isdigit()
+                or len(text_page_arg) > 8 or int(text_page_arg) < 1):
+            abort(400, description="Choose a valid text-only updates page.")
+        text_total = len(text_notes)
+        text_pages = max(1, (text_total + 99) // 100)
+        text_page = min(int(text_page_arg), text_pages)
+        text_notes = text_notes[(text_page - 1) * 100:text_page * 100]
         page_text = request.args.get("web_page", "1")
         if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8 or int(page_text) < 1:
             abort(400, description="Choose a valid website report page.")
@@ -740,6 +753,8 @@ def create_app(service):
                                website_entries=website_entries, report_mode=report_mode,
                                body_view=body_view, body_counts=body_counts, web_endpoint_total=web_endpoint_total,
                                web_diagnostics=web_diagnostics, network_notes=network_notes,
+                               text_notes=text_notes, text_total=text_total, text_page=text_page, text_pages=text_pages,
+                               text_log_open="text_page" in request.args,
                                capture_diagnostics=capture_diagnostics, capture_total=capture_total,
                                capture_page=capture_page, capture_pages=capture_pages,
                                capture_log_open="capture_page" in request.args,

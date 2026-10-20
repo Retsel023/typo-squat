@@ -98,6 +98,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
               "content_status": "missing" if collect_text else "disabled",
               "body_sha256": None, "body_content_type": None, "body_status": "empty",
               "body_template_sha256": None, "body_template_version": None, "body_template_replacements": 0,
+              "page_structure_sha256": None, "page_structure_version": None, "page_structure_status": "unavailable",
               "body_content_group_sha256": None, "body_content_group_main_sha256": None,
               "body_content_group_version": None,
               "body_content_group_ignored_consent": 0, "body_content_group_status": "unavailable"}
@@ -107,6 +108,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
         result["title_status"] = status
         result["body_status"] = status
         result.update(body_sha256=None, body_template_sha256=None, body_template_version=None,
+                      page_structure_sha256=None, page_structure_version=None, page_structure_status="unavailable",
                       body_template_replacements=0, body_content_group_sha256=None, body_content_group_main_sha256=None,
                       body_content_group_version=None, body_content_group_ignored_consent=0,
                       body_content_group_status="unavailable")
@@ -221,8 +223,9 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                         result.update(template_fingerprint(body_bytes, charset_name, urlsplit(response.url).hostname,
                             url=current.url, title=result["title"], check_budget=remaining))
                     except TimeoutError:
-                        # Optional report grouping cannot retract a completed
-                        # body read or change browser eligibility.
+                        # Optional fingerprints cannot retract a complete body.
+                        # Without structure evidence, prose changes stay eligible.
+                        result["page_structure_status"] = "budget"
                         result["body_content_group_status"] = "budget"
                 result["body_status"] = "complete" if result["body_sha256"] else "empty" if eof else "truncated"
                 return result
