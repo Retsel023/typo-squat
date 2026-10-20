@@ -87,6 +87,37 @@ were captured. No image files or old reports are deleted. Equality of static HTM
 does not prove equal rendered pixels or external/JavaScript content; neither
 pixel comparison nor text-only similarity drives this optimization.
 
+### Shared page groups across domains
+
+The report's **All pages / Shared bodies / Other pages** tabs group its selected
+entries within one client's scan. Exact complete HTML matches share a card.
+New scans also compute a separate `self-host-html-v1` template fingerprint:
+only whole occurrences of the scanned hostname and its `www` form are replaced
+with a placeholder. For example, a Dovendi page naming `fqq.nl` can group with
+the otherwise identical page naming another scanned domain. Other text,
+provider names, prices, forms, scripts, styling and unrelated hostnames remain
+meaningful. This is not broad fuzzy matching or a parking-provider verdict.
+
+Template fingerprints require complete bounded HTML with strict character
+decoding. They use at most the existing 64 KiB/512 KiB body buffer and timeout;
+partial or unreadable bodies remain separate. The buffer is not saved or sent
+to AI. Older records without template metadata can still group exact complete
+bodies; domain-normalized groups require a new scan after rebuilding.
+
+Cards identify exact versus domain-normalized matches and show one actual
+example image. **View all matching domains** opens a paginated member page with
+the real names, protocols, titles, changes, individual images and history links.
+Only entries allowed by the run's full/change-only policy and exclusions enter
+these groups. Groups never mix clients or scan histories. Missing body data is
+not an empty-body match. Rendered-title differences are shown when present.
+
+Cross-domain grouping is a report view, not screenshot reuse or suppression:
+hostname-dependent JavaScript and external content can render differently even
+with identical HTML. Each domain keeps its own capture and DNS/change evidence.
+The existing same-domain HTTP/HTTPS capture deduplication still uses exact
+bodies, never the domain-normalized template fingerprint. No image comparison,
+AI behavior or GoDaddy exclusion logic is changed by grouping.
+
 Distinct HTTP/HTTPS bodies have separate screenshots. Candidate detail pages can
 show earlier/current screenshots side by side, selected from saved history
 without decoding or comparing their pixels. Historical visual-comparison metadata

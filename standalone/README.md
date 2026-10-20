@@ -309,6 +309,24 @@ protocol does not claim a screenshot, and both endpoints are checked next run.
 HTML equality is not a guarantee of identical JavaScript execution, external
 assets or rendered pixels; no image comparison is performed.
 
+Reports also have **All pages / Shared bodies / Other pages** tabs. Within each
+client's scan, matching complete HTML appears once with a representative image
+and a link to all matching domains (100 entries per member page). New scans
+compute a separate template fingerprint that replaces only the scanned
+hostname, with or without `www`, with a placeholder. This groups otherwise
+identical sale pages whose domain name differs, while preserving other content
+and recording the real domains/titles unchanged. Exact and domain-normalized
+matches are labelled separately. Incomplete/unreadable bodies stay individual;
+older reports without template fingerprints can group only exact matches.
+
+The report's existing changes/full mode and exclusions are applied before
+grouping. Individual images, website change details, DNS state and history stay
+available. Cross-domain grouping does not skip browser captures or infer a site
+is harmless or owned by a particular provider. Same-domain HTTP/HTTPS capture
+suppression still requires exact complete bodies. AI and title exclusions are
+unchanged. Rebuild and start a new scan to collect hostname-normalized template
+metadata; this does not rewrite historical observations.
+
 See [text-only n8n review](../docs/N8N.md) and the [suggested AI prompt](../docs/AI_TEXT_PROMPT.md).
 
 MassDNS can feed this work before its bulk DNS job finishes. A domain is offered

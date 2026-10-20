@@ -63,6 +63,8 @@ class CaptureDecisionLog:
                 "body_status": probe.get("body_status", "not_recorded"),
                 "body_bytes_read": probe.get("title_bytes"),
                 "body_comparison": probe.get("body_comparison"),
+                "body_template_version": probe.get("body_template_version"),
+                "body_template_replacements": probe.get("body_template_replacements", 0),
                 "website_status": probe.get("status"),
                 "final_html_url": probe.get("title_url"),
                 "reason": probe.get("capture_reason"),

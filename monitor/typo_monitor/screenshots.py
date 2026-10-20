@@ -93,6 +93,18 @@ def _validated_preflight(diagnostics, requested):
                 or (body_status == "complete") != (body_hash is not None)):
             raise ValueError("Invalid complete-body fingerprint metadata.")
         validated[url].update(body_sha256=body_hash, body_content_type=body_type, body_status=body_status)
+        template_hash = entry.get("body_template_sha256")
+        template_version = entry.get("body_template_version")
+        template_count = entry.get("body_template_replacements", 0)
+        from .body_templates import TEMPLATE_VERSION
+        if (template_hash is not None and (body_status != "complete" or not isinstance(template_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", template_hash) or template_version != TEMPLATE_VERSION)
+                or template_hash is None and template_version is not None
+                or type(template_count) is not int or not 0 <= template_count <= MAX_BODY_BYTES
+                or template_hash is None and template_count != 0):
+            raise ValueError("Invalid complete HTML template fingerprint metadata.")
+        validated[url].update(body_template_sha256=template_hash, body_template_version=template_version,
+                              body_template_replacements=template_count)
         content_status = entry.get("content_status", "disabled")
         page_text = entry.get("page_text", "")
         if (not isinstance(content_status, str) or content_status not in TEXT_STATUSES

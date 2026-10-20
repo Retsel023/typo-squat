@@ -18,6 +18,7 @@ from flask import (
 from .domains import normalize_domain, parse_domains
 from .text_review import review_selection
 from .progress import read_progress, read_tool_output
+from .body_groups import group_report_entries
 
 
 DOMAIN_LABELS = {
@@ -693,7 +694,15 @@ def create_app(service):
         from .capture_changes import report_entries, website_check_diagnostics
         report_mode = run.get("capture_policy", {}).get("mode", "full")
         captures = service.store.list_run_captures(str(run_id))
-        website_entries = report_entries(captures, report_mode)
+        website_groups = group_report_entries(report_entries(captures, report_mode))
+        body_view = request.args.get("body_view", "all")
+        if body_view not in {"all", "shared", "individual"}:
+            abort(400, description="Choose all, shared or individual website bodies.")
+        body_counts = {"all": len(website_groups), "shared": sum(group["shared"] for group in website_groups)}
+        body_counts["individual"] = body_counts["all"] - body_counts["shared"]
+        website_entries = [group for group in website_groups if body_view == "all"
+                           or group["shared"] == (body_view == "shared")]
+        web_endpoint_total = sum(group["endpoint_count"] for group in website_entries)
         web_diagnostics = website_check_diagnostics(captures)
         page_text = request.args.get("web_page", "1")
         if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8 or int(page_text) < 1:
@@ -707,6 +716,7 @@ def create_app(service):
                                progress=progress, outputs=outputs, progress_stages=PROGRESS_STAGES,
                                demo="demo" in run.get("source_status", {}), handoff=handoff,
                                website_entries=website_entries, report_mode=report_mode,
+                               body_view=body_view, body_counts=body_counts, web_endpoint_total=web_endpoint_total,
                                web_diagnostics=web_diagnostics,
                                web_page=web_page, web_pages=web_pages, web_total=web_total,
                                handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
@@ -715,6 +725,29 @@ def create_app(service):
                                                "unchanged": "Unchanged text", "uncertain": "Incomplete / uncertain text",
                                                "duplicate": "Duplicate protocol pairs", "parked": "Likely parked",
                                                "reviewed": "Already reviewed"})
+
+    @app.get("/runs/<uuid:run_id>/bodies/<group_id>")
+    def body_group_detail(run_id, group_id):
+        if len(group_id) != 64 or any(character not in "0123456789abcdef" for character in group_id):
+            abort(404, description="This body group could not be found.")
+        run = service.store.get_run(str(run_id))
+        if run is None:
+            abort(404, description="This scan could not be found.")
+        project = project_or_404(run["project_id"])
+        from .capture_changes import report_entries
+        mode = run.get("capture_policy", {}).get("mode", "full")
+        groups = group_report_entries(report_entries(service.store.list_run_captures(str(run_id)), mode))
+        group = next((item for item in groups if item["group_id"] == group_id), None)
+        if group is None or not group["complete_body"]:
+            abort(404, description="This body group is not in this scan's report.")
+        page_text = request.args.get("member_page", "1")
+        if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8 or int(page_text) < 1:
+            abort(400, description="Choose a valid body group page.")
+        member_pages = max(1, (group["member_count"] + 99) // 100)
+        member_page = min(int(page_text), member_pages)
+        members = group["members"][(member_page - 1) * 100:member_page * 100]
+        return render_template("body_group.html", run=run, project=project, page="run", group=group,
+                               members=members, member_page=member_page, member_pages=member_pages)
 
     @app.get("/runs/<uuid:run_id>/progress")
     def run_progress(run_id):

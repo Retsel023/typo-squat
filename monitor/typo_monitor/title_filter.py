@@ -96,12 +96,15 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
     result = {"title": None, "title_status": "missing", "title_url": response.url,
               "title_http_status": response.status_code, "title_bytes": 0,
               "content_status": "missing" if collect_text else "disabled",
-              "body_sha256": None, "body_content_type": None, "body_status": "empty"}
+              "body_sha256": None, "body_content_type": None, "body_status": "empty",
+              "body_template_sha256": None, "body_template_version": None, "body_template_replacements": 0}
     title_parser = None
 
     def failed(status):
         result["title_status"] = status
         result["body_status"] = status
+        result.update(body_sha256=None, body_template_sha256=None, body_template_version=None,
+                      body_template_replacements=0)
         if collect_text:
             result["content_status"] = status
         if title_parser is not None and title_parser.complete and not title_parser.truncated:
@@ -165,12 +168,15 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                 from .html_body import HtmlBody
                 body = HtmlBody(current.raw, encoding, remaining)
                 charset = re.search(r"charset\s*=\s*[\"']?([^;\s\"']+)", content_type)
+                charset_name = charset.group(1) if charset else "utf-8-sig"
                 try:
-                    decoder = codecs.getincrementaldecoder(charset.group(1) if charset else "utf-8-sig")("replace")
+                    decoder = codecs.getincrementaldecoder(charset_name)("replace")
                 except LookupError:
-                    decoder = codecs.getincrementaldecoder("utf-8-sig")("replace")
+                    charset_name = "utf-8-sig"
+                    decoder = codecs.getincrementaldecoder(charset_name)("replace")
                 title_parser = _Title()
                 body_hash = hashlib.sha256()
+                body_bytes = bytearray()
                 result["body_content_type"] = content_type if len(content_type) <= 256 else None
                 parser, limit, eof = title_parser, MAX_HTML_BYTES, False
                 if collect_text:
@@ -191,6 +197,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                         break
                     result["title_bytes"] += len(chunk)
                     body_hash.update(chunk)
+                    body_bytes.extend(chunk)
                     if not parser.done and not parser.truncated:
                         parser.feed(decoder.decode(chunk))
                 title = " ".join(title_parser.text.split())
@@ -203,6 +210,10 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                 # tag, readable text or a bounded prefix cannot establish it.
                 if eof and result["title_bytes"]:
                     result["body_sha256"] = body_hash.hexdigest()
+                    from .body_templates import template_fingerprint
+                    remaining()
+                    result.update(template_fingerprint(body_bytes, charset_name, urlsplit(response.url).hostname))
+                    remaining()
                 result["body_status"] = "complete" if result["body_sha256"] else "empty" if eof else "truncated"
                 return result
     except (TimeoutError, requests.exceptions.Timeout):
