@@ -67,6 +67,16 @@ scan solely for its missing image if the paired protocol has passed the existing
 saved-image, route and refresh-age checks. DNS and other domains keep streaming
 while each hostname waits for its own pair.
 
+The text extraction cap (12,000 characters, plus link/form/depth limits) is
+independent of the complete-body read. Reaching a text cap stops the parser,
+while the response continues through the bounded body hash reader. A
+`content_status: truncated` text excerpt can therefore have
+`body_status: complete` and qualify for HTTP/HTTPS deduplication. A genuinely
+truncated HTML response, byte-cap hit, timeout or read error still cannot match.
+**Capture decision** and the live decision log record body-read status and why
+the pair was merged, unavailable, or different (body bytes, endpoint, title or
+content type). Similar-looking screenshots alone do not establish identical HTML.
+
 The report combines a matching pair into one card, explicitly naming the protocol
 captured and retaining each protocol's change details. Both check records remain
 saved. The duplicate row has `skip_reason: duplicate_body` and

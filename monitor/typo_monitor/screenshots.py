@@ -13,7 +13,7 @@ import subprocess
 from .adapters import _report_progress, _run_command
 from .domains import normalize_domain
 from .website_probe import WebsiteProbe, BROWSER_USER_AGENT
-from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, filter_decision
+from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, BODY_STATUSES, filter_decision
 from .page_text import MAX_BODY_BYTES, MAX_TEXT_CHARS, TEXT_STATUSES
 from .capture_decisions import CaptureDecisionLog
 
@@ -86,10 +86,13 @@ def _validated_preflight(diagnostics, requested):
         validated[url].update(title=title, title_status=title_status, title_url=title_url,
                               title_http_status=title_code, title_bytes=title_bytes)
         body_hash, body_type = entry.get("body_sha256"), entry.get("body_content_type")
+        body_status = entry.get("body_status", "complete" if body_hash else "disabled")
         if (body_hash is not None and (not isinstance(body_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", body_hash))
-                or body_type is not None and (not isinstance(body_type, str) or len(body_type) > 256)):
+                or body_type is not None and (not isinstance(body_type, str) or len(body_type) > 256)
+                or not isinstance(body_status, str) or body_status not in BODY_STATUSES
+                or (body_status == "complete") != (body_hash is not None)):
             raise ValueError("Invalid complete-body fingerprint metadata.")
-        validated[url].update(body_sha256=body_hash, body_content_type=body_type)
+        validated[url].update(body_sha256=body_hash, body_content_type=body_type, body_status=body_status)
         content_status = entry.get("content_status", "disabled")
         page_text = entry.get("page_text", "")
         if (not isinstance(content_status, str) or content_status not in TEXT_STATUSES
@@ -151,7 +154,16 @@ def _deduplicate_protocols(capture, rows, eligible):
     """Queue one browser only for complete, identical same-host HTML bodies."""
     from urllib.parse import urlsplit
     from .capture_changes import CHANGE_LABELS
-    if len(rows) != 2 or not any(eligible.get(row["url"]) for row in rows):
+    if len(rows) != 2:
+        return
+
+    def note(status, reason, differences=()):
+        for row in rows:
+            row["preflight"]["body_comparison"] = {"status": status, "reason": reason,
+                                                    "differences": list(differences)}
+
+    if not any(eligible.get(row["url"]) for row in rows):
+        note("not_compared", "neither_protocol_needs_browser")
         return
 
     def identity(row):
@@ -172,7 +184,13 @@ def _deduplicate_protocols(capture, rows, eligible):
                 probe.get("title_http_status"), target.hostname, port, target.path or "/", target.query)
 
     first, second = map(identity, rows)
-    if first is None or first != second:
+    if first is None or second is None:
+        note("unavailable", "body_or_endpoint_metadata_incomplete")
+        return
+    if first != second:
+        names = ("html_body", "content_type", "title", "final_http_status", "destination_host",
+                 "destination_port", "destination_path", "destination_query")
+        note("different", "comparison_fields_differ", [name for name, a, b in zip(names, first, second) if a != b])
         return
     # In a changelog keep an endpoint with an observed change as the image's
     # actual identity; otherwise prefer HTTPS. No cross-domain deduplication.
@@ -191,7 +209,9 @@ def _deduplicate_protocols(capture, rows, eligible):
                 and probe.get("capture_reason") == "image_baseline_missing"
                 and probe.get("previous_duplicate_body_of") == source["scheme"]
                 and baseline.get("skip_reason") in {"unchanged_title", "unchanged_content"}):
+            note("matched_capture_separate", "other_protocol_not_eligible_for_shared_capture")
             return
+    note("matched", "shared_current_capture" if eligible.get(source["url"]) else "paired_unchanged_image_baseline")
     duplicate = next(row for row in rows if row is not source)
     duplicate["preflight"].update(skip_reason="duplicate_body", capture_decision="skip",
                                   capture_reason="duplicate_body", duplicate_body_of=source["scheme"])

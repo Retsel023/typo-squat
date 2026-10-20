@@ -18,6 +18,8 @@ MAX_TITLE_CHARS = 1024
 MAX_REDIRECTS = 3
 TITLE_STATUSES = frozenset({"disabled", "found", "missing", "truncated", "non_html", "encoded",
                             "timeout", "read_error", "redirect_limit", "unsupported_redirect"})
+BODY_STATUSES = frozenset({"disabled", "complete", "empty", "truncated", "non_html", "encoded",
+                           "timeout", "read_error", "redirect_limit", "unsupported_redirect"})
 
 
 def normalize_policy(enabled=False, rules=()):
@@ -94,11 +96,12 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
     result = {"title": None, "title_status": "missing", "title_url": response.url,
               "title_http_status": response.status_code, "title_bytes": 0,
               "content_status": "missing" if collect_text else "disabled",
-              "body_sha256": None, "body_content_type": None}
+              "body_sha256": None, "body_content_type": None, "body_status": "empty"}
     title_parser = None
 
     def failed(status):
         result["title_status"] = status
+        result["body_status"] = status
         if collect_text:
             result["content_status"] = status
         if title_parser is not None and title_parser.complete and not title_parser.truncated:
@@ -173,19 +176,22 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                 if collect_text:
                     from .page_text import MAX_BODY_BYTES, PageText
                     parser, limit = PageText(title_parser, current.url), MAX_BODY_BYTES
-                while result["title_bytes"] < limit and not parser.truncated:
+                # Text extraction can stop at its character/link/depth caps.
+                # Continue hashing the response independently up to the HTML
+                # byte cap/deadline, without feeding the stopped text parser.
+                while result["title_bytes"] < limit:
                     remaining()
                     chunk = body.read(min(4096, limit - result["title_bytes"]))
                     remaining()
                     if not chunk:
-                        if not parser.done:
+                        if not parser.done and not parser.truncated:
                             parser.feed(decoder.decode(b"", final=True))
                             parser.close()
                         eof = True
                         break
                     result["title_bytes"] += len(chunk)
                     body_hash.update(chunk)
-                    if not parser.done:
+                    if not parser.done and not parser.truncated:
                         parser.feed(decoder.decode(chunk))
                 title = " ".join(title_parser.text.split())
                 result["title"] = title or None
@@ -197,6 +203,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                 # tag, readable text or a bounded prefix cannot establish it.
                 if eof and result["title_bytes"]:
                     result["body_sha256"] = body_hash.hexdigest()
+                result["body_status"] = "complete" if result["body_sha256"] else "empty" if eof else "truncated"
                 return result
     except (TimeoutError, requests.exceptions.Timeout):
         return failed("timeout")

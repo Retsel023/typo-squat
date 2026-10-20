@@ -295,6 +295,13 @@ protocol actually captured. No bodies are compared across different domains.
 The fingerprint reuses the existing GET, byte limits and timeout, reading to EOF
 within those limits. Missing, truncated, unreadable or different bodies do not
 merge. Title-only mode retains its smaller 64 KiB limit; text mode uses 512 KiB.
+The 12,000-character text limit and link/form/depth caps stop text extraction
+without stopping the independent bounded body hash read. Truncated saved text
+can still have a complete HTML body fingerprint. In **Capture decision** and
+`capture-decisions.log`, body-read status is separate from text-read status;
+HTTP/HTTPS comparisons record unavailable data or the differing comparison
+fields when the URLs are kept separate. This does not infer body equality from
+similar screenshots or compare a partial-body prefix as a complete response.
 A skipped duplicate does not force an extra screenshot on the next unchanged
 scan solely because it has no image, when its paired protocol still has a valid
 unchanged image baseline. A failed selected capture stays a failure; the skipped

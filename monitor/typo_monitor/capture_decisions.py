@@ -36,6 +36,8 @@ class CaptureDecisionLog:
                     return value
                 if isinstance(value, dict) and depth < 3:
                     return {str(key)[:80]: small(item, depth + 1) for key, item in list(value.items())[:20]}
+                if isinstance(value, (list, tuple)) and depth < 3:
+                    return [small(item, depth + 1) for item in value[:20]]
                 return str(value)[:2048]
             # ASCII JSON escapes page-supplied controls and bounds each line.
             self.stream.write(json.dumps({"time": datetime.now(timezone.utc).isoformat(), **small(entry)},
@@ -58,6 +60,9 @@ class CaptureDecisionLog:
         return {"url": row["url"], "html_title": probe.get("title"),
                 "html_title_status": probe.get("title_status", "disabled"),
                 "html_filter": probe.get("title_filter"),
+                "body_status": probe.get("body_status", "not_recorded"),
+                "body_bytes_read": probe.get("title_bytes"),
+                "body_comparison": probe.get("body_comparison"),
                 "website_status": probe.get("status"),
                 "final_html_url": probe.get("title_url"),
                 "reason": probe.get("capture_reason"),
