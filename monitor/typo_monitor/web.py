@@ -738,7 +738,12 @@ def create_app(service):
         mode = run.get("capture_policy", {}).get("mode", "full")
         groups = group_report_entries(report_entries(service.store.list_run_captures(str(run_id)), mode))
         group = next((item for item in groups if item["group_id"] == group_id), None)
-        if group is None or not group["complete_body"]:
+        if group is None:
+            # Keep each protocol's original content group and saved links accessible.
+            group = next((view for item in groups for view in item.get("protocol_views", [])
+                          if view["group_id"] == group_id), None)
+        if group is None or not (group["complete_body"]
+                                 or group["match_kind"] == "protocol_pair" and group["shared"]):
             abort(404, description="This body group is not in this scan's report.")
         page_text = request.args.get("member_page", "1")
         if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8 or int(page_text) < 1:

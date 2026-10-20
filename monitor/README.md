@@ -332,8 +332,11 @@ to skip browser captures. Unknown consent markup can still stay separate.
 If no content match is established, the remaining HTTP and HTTPS entries for a
 domain share one **HTTP / HTTPS views** card, with both images and their own
 results. This fallback works with older reports and does not revive observations
-excluded by the scan's report mode or title rules. Similarity normalization
-requires a new scan; screenshot scheduling, AI and DNS behavior are unchanged.
+excluded by the scan's report mode or title rules. HTTP-only and HTTPS-only
+shared groups also share one card if their complete domain lists match exactly,
+with separate examples, content-match labels and links to each original group.
+Partial overlaps stay separate. Similarity normalization requires a new scan;
+screenshot scheduling, AI and DNS behavior are unchanged.
 
 See [text-only n8n review](../docs/N8N.md) and the [suggested AI prompt](../docs/AI_TEXT_PROMPT.md).
 

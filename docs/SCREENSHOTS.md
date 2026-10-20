@@ -150,8 +150,16 @@ When unmatched HTTP and HTTPS entries for one domain both remain in the report,
 they appear inside one **HTTP / HTTPS views** card, with independently labelled
 images, titles, capture outcomes and comparisons. This fallback makes no body
 match claim, does not resurrect excluded/unchanged entries, and also works on
-older saved reports after the application rebuild. If one protocol already
-belongs to a shared-content group, its unmatched counterpart remains separate.
+older saved reports after the application rebuild.
+
+The same layout also pairs an HTTP-only shared group with an HTTPS-only shared
+group when their **entire domain lists match exactly**. Each side keeps its own
+example screenshot, titles, capture decisions and content-match label. The
+combined card links to all observations and to each original protocol group;
+existing links to those groups remain valid. Pairing compares the full lists,
+not just the domain preview, counts or example domain. A partial overlap, or a
+group that already contains both protocols, stays separate. This is a display
+pairing, not an additional content match or a reason to skip either capture.
 
 Distinct HTTP/HTTPS bodies have separate screenshots. Candidate detail pages can
 show earlier/current screenshots side by side, selected from saved history

@@ -80,24 +80,32 @@ def group_report_entries(entries):
             group["reason"] = {"similar_content": "Similar content", "domain_template": "Shared page template",
                                "exact": "Shared HTML body"}[group["match_kind"]]
         groups.append(group)
-    return _pair_unmatched_protocols(groups)
+    return _pair_protocol_views(groups)
 
 
-def _pair_unmatched_protocols(groups):
-    """A visual fallback, explicitly without a body-equality claim."""
+def _pair_protocol_views(groups):
+    """Pair equal domain sets for display, without claiming equal content."""
     candidates = {}
     for index, group in enumerate(groups):
-        if not group["shared"] and group["member_count"] == 1 and len(group["schemes"]) == 1:
-            candidates.setdefault(group["capture"]["domain"], []).append(index)
+        schemes = {scheme for member in group["members"] for scheme in member["schemes"]}
+        if schemes in ({"http"}, {"https"}):
+            domains = tuple(sorted({member["capture"]["domain"] for member in group["members"]}))
+            candidates.setdefault(domains, []).append((index, next(iter(schemes))))
     replacements, removed = {}, set()
-    for domain, indices in candidates.items():
-        if len(indices) != 2 or {groups[index]["capture"]["scheme"] for index in indices} != {"http", "https"}:
+    for domains, matches in candidates.items():
+        if len(matches) != 2 or {scheme for _, scheme in matches} != {"http", "https"}:
             continue
-        members = sorted((groups[index]["members"][0] for index in indices), key=lambda entry: entry["capture"]["scheme"])
-        pair = dict(groups[indices[0]])
-        pair.update(group_id=hashlib.sha256(("protocol-pair-v1\x00" + domain).encode()).hexdigest(),
-                    members=members, member_count=2, endpoint_count=2, schemes=["http", "https"],
-                    match_kind="protocol_pair", complete_body=False, shared=False, reason="HTTP / HTTPS views")
+        views = [groups[index] for index, _ in sorted(matches, key=lambda match: match[1])]
+        members = sorted((member for view in views for member in view["members"]),
+                         key=lambda entry: (entry["capture"]["domain"], entry["capture"]["scheme"]))
+        identity = ["protocol-pair-v2", domains, [view["group_id"] for view in views]]
+        pair = dict(views[0])
+        pair.update(group_id=hashlib.sha256(json.dumps(identity, ensure_ascii=True).encode("ascii")).hexdigest(),
+                    members=members, member_count=len(members), protocol_views=views,
+                    endpoint_count=sum(view["endpoint_count"] for view in views), schemes=["http", "https"],
+                    match_kind="protocol_pair", complete_body=False, shared=len(domains) > 1,
+                    reason="HTTP / HTTPS groups" if len(domains) > 1 else "HTTP / HTTPS views")
+        indices = sorted(index for index, _ in matches)
         replacements[indices[0]] = pair
         removed.add(indices[1])
     return [replacements.get(index, group) for index, group in enumerate(groups) if index not in removed]
