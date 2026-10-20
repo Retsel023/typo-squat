@@ -121,5 +121,6 @@ class PageText(HTMLParser):
         return {"content_status": status, "content_version": EXTRACTION_VERSION, "page_text": text,
                 "text_sha256": hashlib.sha256(canonical.encode()).hexdigest() if status == "complete" else None,
                 "content_sha256": hashlib.sha256(fingerprint.encode()).hexdigest() if status == "complete" else None,
+                "forms_sha256": hashlib.sha256(json.dumps(forms, ensure_ascii=False).encode()).hexdigest() if status == "complete" else None,
                 "links": [value[:256] for value in links[:8]], "forms": [value[:256] for value in forms[:8]],
                 "links_count": len(links), "forms_count": len(forms)}

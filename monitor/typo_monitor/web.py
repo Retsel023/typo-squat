@@ -99,9 +99,9 @@ def _has_capture_image(capture):
     return capture.get("scheme") in {"http", "https"}
 
 
-def _website_report_groups(captures, mode):
+def _website_report_groups(captures, mode, *, include_context=False):
     from .capture_changes import report_entries
-    entries = report_entries(captures, mode)
+    entries = report_entries(captures, mode, include_context=include_context)
     for entry in entries:
         entry["has_image"] = _has_capture_image(entry["capture"])
     # Keep all observations in the groups so domain lists and detail links do
@@ -708,7 +708,11 @@ def create_app(service):
         project = project_or_404(run["project_id"])
         progress, outputs = live_data(run_id)
         from .capture_changes import website_check_diagnostics, website_network_notes, website_text_notes
-        report_mode = run.get("capture_policy", {}).get("mode", "full")
+        capture_mode = run.get("capture_policy", {}).get("mode", "full")
+        website_view = request.args.get("website_view", "priority")
+        if website_view not in {"priority", "all"}:
+            abort(400, description="Choose priority changes or all captured pages.")
+        report_mode = "changes" if website_view == "priority" else "full"
         captures = service.store.list_run_captures(str(run_id))
         entries, website_groups = _website_report_groups(captures, report_mode)
         website_groups = [group for group in website_groups if group["has_image"]]
@@ -724,7 +728,8 @@ def create_app(service):
         web_endpoint_total = sum(group["endpoint_count"] for group in website_entries)
         web_diagnostics = website_check_diagnostics(captures)
         network_notes = website_network_notes(captures)
-        text_notes = website_text_notes(captures)
+        text_notes = website_text_notes(captures) if report_mode == "changes" else []
+        text_endpoint_total = sum(len(group["captures"]) for group in text_notes)
         text_page_arg = request.args.get("text_page", "1")
         if (not text_page_arg.isascii() or not text_page_arg.isdigit()
                 or len(text_page_arg) > 8 or int(text_page_arg) < 1):
@@ -753,9 +758,11 @@ def create_app(service):
                                progress=progress, outputs=outputs, progress_stages=PROGRESS_STAGES,
                                demo="demo" in run.get("source_status", {}), handoff=handoff,
                                website_entries=website_entries, report_mode=report_mode,
+                               capture_mode=capture_mode, website_view=website_view,
                                body_view=body_view, body_counts=body_counts, web_endpoint_total=web_endpoint_total,
                                web_diagnostics=web_diagnostics, network_notes=network_notes,
                                text_notes=text_notes, text_total=text_total, text_page=text_page, text_pages=text_pages,
+                               text_endpoint_total=text_endpoint_total,
                                text_log_open="text_page" in request.args,
                                capture_diagnostics=capture_diagnostics, capture_total=capture_total,
                                capture_page=capture_page, capture_pages=capture_pages,
@@ -776,13 +783,31 @@ def create_app(service):
         if run is None:
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
-        mode = run.get("capture_policy", {}).get("mode", "full")
-        _, groups = _website_report_groups(service.store.list_run_captures(str(run_id)), mode)
+        website_view = request.args.get("website_view", "priority")
+        if website_view not in {"priority", "all"}:
+            abort(400, description="Choose priority changes or all captured pages.")
+        mode = "changes" if website_view == "priority" else "full"
+        captures = service.store.list_run_captures(str(run_id))
+        _, groups = _website_report_groups(captures, mode)
         group = next((item for item in groups if item["group_id"] == group_id), None)
         if group is None:
             # Keep each protocol's original content group and saved links accessible.
             group = next((view for item in groups for view in item.get("protocol_views", [])
                           if view["group_id"] == group_id), None)
+        if group is None and mode == "changes":
+            # Saved links to groups demoted to context-only entries remain
+            # available for deliberate inspection of their original captures.
+            _, archived_groups = _website_report_groups(captures, mode, include_context=True)
+            group = next((item for item in archived_groups if item["group_id"] == group_id), None)
+            if group is None:
+                group = next((view for item in archived_groups for view in item.get("protocol_views", [])
+                              if view["group_id"] == group_id), None)
+        if group is None and mode == "changes":
+            _, all_groups = _website_report_groups(captures, "full")
+            group = next((item for item in all_groups if item["group_id"] == group_id), None)
+            if group is None:
+                group = next((view for item in all_groups for view in item.get("protocol_views", [])
+                              if view["group_id"] == group_id), None)
         if group is None or not (group["complete_body"]
                                  or group["match_kind"] == "protocol_pair" and group["shared"]):
             abort(404, description="This body group is not in this scan's report.")
@@ -793,6 +818,7 @@ def create_app(service):
         member_page = min(int(page_text), member_pages)
         members = group["members"][(member_page - 1) * 100:member_page * 100]
         return render_template("body_group.html", run=run, project=project, page="run", group=group,
+                               website_view=website_view,
                                members=members, member_page=member_page, member_pages=member_pages)
 
     @app.get("/runs/<uuid:run_id>/progress")

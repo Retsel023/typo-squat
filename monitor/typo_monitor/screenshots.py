@@ -147,7 +147,7 @@ def _validated_preflight(diagnostics, requested):
         if (not isinstance(content_status, str) or content_status not in TEXT_STATUSES
                 or not isinstance(page_text, str) or len(page_text) > MAX_TEXT_CHARS):
             raise ValueError("Website preflight returned invalid text metadata.")
-        for key in ("text_sha256", "content_sha256"):
+        for key in ("text_sha256", "content_sha256", "forms_sha256"):
             value = entry.get(key)
             if value is not None and (not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)):
                 raise ValueError("Website preflight returned invalid text fingerprints.")
@@ -157,7 +157,7 @@ def _validated_preflight(diagnostics, requested):
         if version is not None and (not isinstance(version, str) or len(version) > 80):
             raise ValueError("Invalid extraction version.")
         validated[url].update(content_status=content_status, page_text=page_text, content_version=version,
-            text_sha256=entry.get("text_sha256"), content_sha256=entry.get("content_sha256"))
+            text_sha256=entry.get("text_sha256"), content_sha256=entry.get("content_sha256"), forms_sha256=entry.get("forms_sha256"))
         for key in ("links", "forms"):
             values = entry.get(key, [])
             if not isinstance(values, list) or len(values) > 8 or any(not isinstance(value, str) or len(value) > 256 for value in values):

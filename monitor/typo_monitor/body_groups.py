@@ -112,7 +112,7 @@ def group_report_entries(entries):
         group["ignored_consent_blocks"] = sum(entry["capture"].get("preflight", {}).get("body_content_group_ignored_consent", 0)
                                                for entry in members)
         if group["shared"]:
-            group["reason"] = {"similar_content": "Similar content", "domain_template": "Shared page template",
+            group["reason"] = {"similar_content": "Matching current content", "domain_template": "Shared page template",
                                "exact": "Shared HTML body"}[group["match_kind"]]
         groups.append(group)
     return _pair_protocol_views(groups)

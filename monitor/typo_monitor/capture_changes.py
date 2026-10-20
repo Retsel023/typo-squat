@@ -3,6 +3,8 @@
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import difflib
+import hashlib
+import json
 import textwrap
 
 
@@ -99,6 +101,20 @@ def _route_key(route):
     return (bool(route.get("enabled")), route.get("endpoint") if route.get("enabled") else None)
 
 
+def _form_signature(probe):
+    if not text_complete(probe):
+        return None
+    if probe.get("forms_sha256"):
+        return probe["forms_sha256"]
+    # Legacy samples prove the full set only when neither count nor string
+    # truncation could have hidden fields. Never compare the first eight alone.
+    values, count = probe.get("forms"), probe.get("forms_count")
+    if (not isinstance(values, list) or type(count) is not int or count != len(values) or count > 8
+            or any(not isinstance(value, str) or len(value) >= 256 for value in values)):
+        return None
+    return hashlib.sha256(json.dumps(sorted(values), ensure_ascii=False).encode()).hexdigest()
+
+
 def compare(capture, domain, row, diagnostic):
     """Compare each field to its latest trustworthy accepted observation.
 
@@ -143,6 +159,8 @@ def compare(capture, domain, row, diagnostic):
         (("title", title_old), ("text", text_old if text_mode else None),
          ("connection", connection_old), ("endpoint", final_endpoint_old)) if evidence}
     diagnostic["previous_content_sha256"] = previous.get("content_sha256")
+    current_forms, previous_forms = _form_signature(diagnostic), _form_signature(previous)
+    diagnostic["form_change"] = ("changed" if current_forms != previous_forms else "unchanged") if current_forms and previous_forms else None
     structure = _structure_comparison(diagnostic, previous)
     diagnostic.update(structure_comparison=structure["status"], structure_match_reason=structure["reason"],
                       layout_similarity=structure["similarity"])
@@ -335,15 +353,79 @@ def website_network_notes(captures):
 
 
 def website_text_notes(captures):
-    """Keep minor prose diffs outside the main changes-only screenshot cards."""
-    return sorted((capture for capture in captures
-        if capture.get("preflight", {}).get("web_change") in {"text_only_update", "minor_content_update"}
-        and capture.get("preflight", {}).get("skip_reason") not in {"title_rule", "duplicate_body"}
-        and capture.get("preflight", {}).get("report_exclusion") != "browser_title_rule"),
-        key=lambda capture: (capture["domain"], capture["scheme"]))
+    """Compact context updates, paired by domain without rendering images."""
+    groups, selected = {}, {}
+    for capture in captures:
+        probe = capture.get("preflight", {})
+        if (probe.get("status") != "http_response" or probe.get("skip_reason") in {"title_rule", "duplicate_body"}
+                or probe.get("report_exclusion") == "browser_title_rule"):
+            continue
+        priority, reason = review_priority(capture)
+        if priority != "context":
+            continue
+        selected[(capture["domain"], capture["scheme"])] = capture, reason
+    for capture in captures:
+        probe = capture.get("preflight", {})
+        source = selected.get((capture["domain"], probe.get("duplicate_body_of")))
+        if (probe.get("status") == "http_response" and probe.get("skip_reason") == "duplicate_body"
+                and source and probe.get("report_exclusion") != "browser_title_rule"):
+            selected[(capture["domain"], capture["scheme"])] = capture, source[1]
+    for capture, reason in selected.values():
+        group = groups.setdefault(capture["domain"], {"domain": capture["domain"], "captures": [], "schemes": []})
+        group["captures"].append({"capture": capture, "review_reason": reason})
+        group["schemes"].append(capture["scheme"])
+    for group in groups.values():
+        group["captures"].sort(key=lambda item: item["capture"]["scheme"])
+        group["schemes"].sort()
+        seen = {}
+        for item in reversed(group["captures"]):
+            capture = item["capture"]
+            probe = capture.get("preflight", {})
+            if text_complete(probe):
+                identity = (probe["content_sha256"], probe.get("title"))
+                if identity in seen:
+                    item["shared_context_with"] = seen[identity]
+                else:
+                    seen[identity] = capture["scheme"]
+    return [groups[domain] for domain in sorted(groups)]
 
 
-def report_entries(captures, mode="changes"):
+def review_priority(capture):
+    """Report prominence is independent of why the browser was requested.
+
+    Saved reports can use this policy without rewriting observations or taking
+    more screenshots. An unclassified structure difference is not proof of a
+    drastic visual change; its uncertainty stays explicit in the context log.
+    """
+    probe = capture.get("preflight", {})
+    change = probe.get("web_change")
+    if change in {"first_observation", "first_title_observation", "first_text_observation"}:
+        return "new", "First comparable website observation"
+    old_title = probe.get("previous_known_title", probe.get("previous_title"))
+    old_title_status = probe.get("previous_known_title_status", probe.get("previous_title_status"))
+    title_changed = (_complete(probe) and old_title_status in {"found", "missing"}
+                     and probe.get("title") != old_title)
+    if change == "title_changed" or title_changed:
+        return "major", "Website title changed"
+    if probe.get("form_change") == "changed":
+        return "major", "Form actions or field purposes changed"
+    comparisons = [probe.get("capture_layout_comparison") or {},
+                   {"similarity": probe.get("layout_similarity"), "status": probe.get("structure_comparison")}]
+    if any(item.get("status") == "changed" and type(item.get("similarity")) in {int, float}
+           and item["similarity"] < 85 for item in comparisons):
+        return "major", "Substantial static layout change"
+    if change in {"text_only_update", "minor_content_update"}:
+        return "context", "Content update · title and overall static layout matched"
+    if change == "text_changed":
+        return "context", "Saved page text changed · no drastic layout change confirmed"
+    if change == "structure_changed":
+        if probe.get("content_sha256") and probe["content_sha256"] == probe.get("previous_content_sha256"):
+            return "context", "Page context unchanged · structure or resource details differ"
+        return "context", "Structure or linked-content details changed · drastic change unconfirmed"
+    return "other", "No new high-priority website change recorded"
+
+
+def report_entries(captures, mode="changes", *, include_context=False):
     entries = []
     by_key = {(row["domain"], row["scheme"]): row for row in captures}
     for capture in captures:
@@ -362,10 +444,14 @@ def report_entries(captures, mode="changes"):
         capture_reason = probe.get("capture_reason")
         if mode == "changes" and change not in CONTENT_CHANGE_KINDS:
             continue
+        priority, review_reason = review_priority(capture)
+        if mode == "changes" and not include_context and priority not in {"new", "major"}:
+            continue
         companion = by_key.get((capture["domain"], probe.get("body_shared_with")))
         if companion and companion.get("preflight", {}).get("duplicate_body_of") != capture["scheme"]:
             companion = None
-        entries.append({"capture": capture, "reason": label or "Full report entry",
+        entries.append({"capture": capture, "reason": review_reason if mode == "changes" and priority == "major" else label or "Full report entry",
+                        "review_priority": priority, "review_reason": review_reason,
                         "schemes": ["http", "https"] if companion else [capture["scheme"]],
                         "protocol_observations": [capture, companion] if companion else [],
                         "capture_reason": CAPTURE_REASONS.get(capture_reason,

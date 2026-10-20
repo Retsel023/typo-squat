@@ -198,3 +198,7 @@
 
 .report-protocol-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.report-protocol-view{min-width:0}.report-protocol-view h4{font-size:12px;margin:0 0 10px}.report-protocol-view .title-comparison{grid-template-columns:1fr}.report-protocol-view .run-current-image img{object-fit:contain}@media(max-width:760px){.report-protocol-pair{grid-template-columns:1fr}}
 .report-protocol-pair.single-protocol-view{grid-template-columns:1fr}
+
+.context-updates{margin-top:12px}.context-update{border-top:1px solid var(--line);padding:12px 0}.context-update>summary{cursor:pointer;overflow-wrap:anywhere}.context-update>summary strong{color:var(--green)}.context-protocols{margin:0 12px;color:var(--muted);font-size:12px}.context-update>p{margin-top:10px}.context-protocol{padding:12px 0}.context-protocol h4{margin:0 0 6px;overflow-wrap:anywhere}.context-protocol .page-text-evidence{margin-top:10px}.context-protocol>.diagnostic{margin-top:12px}
+
+.report-priority-toggle{align-self:flex-start;margin:0 20px 12px;max-width:calc(100% - 40px);flex-wrap:wrap}

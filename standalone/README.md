@@ -259,12 +259,34 @@ separate exact check. A major change to one of these cannot be hidden by many
 unchanged article cards. Adding/removing inline scripts remains meaningful, while
 their changing embedded values do not invalidate the profile.
 
-Small page updates with the same title, endpoint and website route go to a
-collapsed **Minor page updates** log, with their text diff, structural overlap and
-actual browser decision. A valid matching screenshot baseline lets changes-only
-scans skip Gowitness **before the browser queue**. Article/recommendation turnover
-can therefore stay out of the main screenshot cards. New pages, changed titles,
-key-element changes and larger layout differences remain browser-eligible.
+The default **Priority changes** report view separates **review priority**
+from the browser-capture reason. New observations, title changes, confirmed form-action/field-purpose
+changes and substantial known layout changes get screenshot cards. Layout overlap
+below 85% is treated as substantial for report prominence; the stricter 95%
+threshold still controls conservative browser skipping. A raw `structure_changed`
+label, resource difference or uncertain historical layout alone does not earn a
+large screenshot card. Other page text, linked-content and structure updates use
+compact **Lower-priority page context** foldouts, paired by domain for HTTP/HTTPS.
+They show saved text, optional diffs, the priority reason and observation details;
+identical protocol context is shown once. Images already captured remain available
+through domain history. Unknown layout evidence is described as unconfirmed,
+not as proof that the rendered site stayed identical.
+
+This report policy also applies when viewing already saved reports after updating
+the application; no fresh scan is needed to fold older text/structure-only entries.
+Stored observations and files are not rewritten. The separate **All captured pages**
+view shows every eligible current-run image, including full-scan captures. Priority
+view is the default regardless of how the scan captured its images. Old saved
+group links remain available for deliberate inspection. New accepted-run headline counts use the new report priority; previous
+saved counts remain historical totals.
+
+Cross-domain **Matching current content** grouping is a separate within-scan
+comparison. It does not establish whether a page changed from history, and cannot
+by itself demote a newly observed site. The report labels now explain that scope.
+A valid matching image baseline can still let routine minor updates skip Gowitness
+before the browser queue. When resource/structure checks request a conservative
+capture, report priority can still put its saved context in the foldout instead
+of presenting the image as a high-priority change.
 
 The current layout is checked against both the latest reliable observation and
 the saved image baseline, so gradual small changes cannot accumulate indefinitely
@@ -276,7 +298,8 @@ still request screenshots. Exclusions continue to apply in both modes.
 Prior reports have no overall-layout profile. Their exact fingerprints remain
 usable, but tolerant comparison requires fresh complete profiles on both sides;
 the first scan after this update may still establish that baseline. Existing
-reports are not reclassified from titles or screenshots alone. If a profile exceeds
+report prominence uses its recorded observations; layout equality is never inferred
+from equal titles or screenshots alone. If a profile exceeds
 its 512-pattern/depth/time bounds, exact comparison remains the fallback. Resource
 file contents and browser-rendered layout are not fetched/compared. Screenshots
 remain for manual visual review.

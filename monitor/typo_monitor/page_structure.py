@@ -56,12 +56,12 @@ def compare_layout(current, previous):
         validate_layout(previous)
     except ValueError:
         return None
-    if current["anchors_sha256"] != previous["anchors_sha256"]:
-        return {"matches": False, "reason": "key_elements_changed", "similarity": None}
     a, b = dict(current["features"]), dict(previous["features"])
     intersection = sum(min(count, b.get(key, 0)) for key, count in a.items())
     union = current["nodes"] + previous["nodes"] - intersection
     similarity = intersection / union
+    if current["anchors_sha256"] != previous["anchors_sha256"]:
+        return {"matches": False, "reason": "key_elements_changed", "similarity": round(similarity * 100, 1)}
     # Short/generic documents need an exact structural match. For larger pages,
     # a few recommendations or wrapping tags must not create a whole new site.
     threshold = LAYOUT_MATCH_THRESHOLD if min(current["nodes"], previous["nodes"]) >= 40 and min(len(a), len(b)) >= 8 else 1

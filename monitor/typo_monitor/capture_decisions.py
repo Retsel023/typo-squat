@@ -71,6 +71,7 @@ class CaptureDecisionLog:
                 "structure_comparison": probe.get("structure_comparison", "not_recorded"),
                 "structure_match_reason": probe.get("structure_match_reason"),
                 "layout_similarity": probe.get("layout_similarity"),
+                "form_change": probe.get("form_change"),
                 "layout_profile_available": probe.get("page_layout") is not None,
                 "body_content_group_ignored_consent": probe.get("body_content_group_ignored_consent", 0),
                 "website_status": probe.get("status"),
