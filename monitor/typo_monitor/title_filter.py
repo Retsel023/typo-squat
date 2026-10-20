@@ -99,6 +99,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
               "body_sha256": None, "body_content_type": None, "body_status": "empty",
               "body_template_sha256": None, "body_template_version": None, "body_template_replacements": 0,
               "page_structure_sha256": None, "page_structure_version": None, "page_structure_status": "unavailable",
+              "page_layout": None,
               "body_content_group_sha256": None, "body_content_group_main_sha256": None,
               "body_content_group_version": None,
               "body_content_group_ignored_consent": 0, "body_content_group_status": "unavailable"}
@@ -109,6 +110,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
         result["body_status"] = status
         result.update(body_sha256=None, body_template_sha256=None, body_template_version=None,
                       page_structure_sha256=None, page_structure_version=None, page_structure_status="unavailable",
+                      page_layout=None,
                       body_template_replacements=0, body_content_group_sha256=None, body_content_group_main_sha256=None,
                       body_content_group_version=None, body_content_group_ignored_consent=0,
                       body_content_group_status="unavailable")

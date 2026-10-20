@@ -922,6 +922,7 @@ class Store:
                 counts["screenshots_body_duplicates"] = sum(attempt["preflight"].get("skip_reason") == "duplicate_body" for _, attempt in attempts)
                 counts["screenshots_text_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_content" for _, attempt in attempts)
                 counts["screenshots_text_only_updates"] = sum(attempt["preflight"].get("skip_reason") == "text_only_update" for _, attempt in attempts)
+                counts["screenshots_minor_updates"] = sum(attempt["preflight"].get("skip_reason") == "minor_content_update" for _, attempt in attempts)
                 counts["screenshots_structure_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_structure" for _, attempt in attempts)
                 counts["screenshots_title_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_title" for _, attempt in attempts)
                 from .capture_changes import report_entries

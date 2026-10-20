@@ -180,6 +180,7 @@ def capture_stream(capture, domains_iterator, workdir):
     title_unchanged = 0
     text_unchanged = 0
     text_only_updates = 0
+    minor_updates = 0
     structure_unchanged = 0
     body_duplicates = 0
     pending = {}
@@ -193,7 +194,8 @@ def capture_stream(capture, domains_iterator, workdir):
             monitor.metrics.update(eligible=len(requested), launched=launched, title_filtered=title_filtered,
                                    title_unchanged=title_unchanged, text_unchanged=text_unchanged, body_duplicates=body_duplicates,
                                    text_only_updates=text_only_updates, structure_unchanged=structure_unchanged,
-                                   skipped=title_filtered + title_unchanged + text_unchanged + text_only_updates + structure_unchanged + body_duplicates
+                                   minor_updates=minor_updates,
+                                   skipped=title_filtered + title_unchanged + text_unchanged + text_only_updates + minor_updates + structure_unchanged + body_duplicates
                                        + sum(counts[key] for key in ("no_http_response", "unknown")), input_open=True)
             monitor.poll()
             last_poll = time.monotonic()
@@ -315,6 +317,7 @@ def capture_stream(capture, domains_iterator, workdir):
             title_unchanged += diagnostic.get("skip_reason") == "unchanged_title"
             text_unchanged += diagnostic.get("skip_reason") == "unchanged_content"
             text_only_updates += diagnostic.get("skip_reason") == "text_only_update"
+            minor_updates += diagnostic.get("skip_reason") == "minor_content_update"
             structure_unchanged += diagnostic.get("skip_reason") == "unchanged_structure"
             _report_progress(callback, "websites", current=len(diagnostics), total=len(results) * 2,
                              metrics={"response": counts["http_response"],
@@ -347,7 +350,8 @@ def capture_stream(capture, domains_iterator, workdir):
                 "title_filtered": title_filtered, "body_duplicates": body_duplicates,
                 "title_unchanged": title_unchanged, "text_unchanged": text_unchanged,
                 "text_only_updates": text_only_updates, "structure_unchanged": structure_unchanged,
-                "skipped": title_filtered + title_unchanged + text_unchanged + text_only_updates + structure_unchanged + body_duplicates
+                "minor_updates": minor_updates,
+                "skipped": title_filtered + title_unchanged + text_unchanged + text_only_updates + minor_updates + structure_unchanged + body_duplicates
                     + counts["no_http_response"] + counts["unknown"]})
         capture._check_shutdown()
         with preflight_file.open("x", encoding="utf-8") as stream:

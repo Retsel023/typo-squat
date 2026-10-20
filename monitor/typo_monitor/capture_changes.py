@@ -80,9 +80,19 @@ def _structure_known(probe):
             and bool(probe.get("page_structure_sha256")))
 
 
-def _same_structure(current, previous):
-    return (_structure_known(current) and _structure_known(previous)
-            and current["page_structure_sha256"] == previous["page_structure_sha256"])
+def _structure_comparison(current, previous):
+    if not (_structure_known(current) and _structure_known(previous)):
+        return {"status": "unavailable", "reason": "structure_evidence_unavailable", "similarity": None}
+    from .page_structure import compare_layout
+    layout = compare_layout(current.get("page_layout"), previous.get("page_layout"))
+    if layout is not None and not layout["matches"]:
+        return {"status": "changed", "reason": layout["reason"], "similarity": layout["similarity"]}
+    if current["page_structure_sha256"] == previous["page_structure_sha256"]:
+        return {"status": "unchanged", "reason": "exact_structure", "similarity": 100.0}
+    if layout is None:
+        return {"status": "changed", "reason": "layout_profile_unavailable", "similarity": None}
+    return {"status": "largely_unchanged" if layout["matches"] else "changed",
+            "reason": layout["reason"], "similarity": layout["similarity"]}
 
 
 def _route_key(route):
@@ -133,18 +143,20 @@ def compare(capture, domain, row, diagnostic):
         (("title", title_old), ("text", text_old if text_mode else None),
          ("connection", connection_old), ("endpoint", final_endpoint_old)) if evidence}
     diagnostic["previous_content_sha256"] = previous.get("content_sha256")
+    structure = _structure_comparison(diagnostic, previous)
+    diagnostic.update(structure_comparison=structure["status"], structure_match_reason=structure["reason"],
+                      layout_similarity=structure["similarity"])
     stable_structure = (text_mode and text_complete(diagnostic) and text_complete(previous)
         and diagnostic.get("content_version") == previous.get("content_version")
-        and _same_structure(diagnostic, previous) and _same_endpoint(diagnostic, previous)
+        and structure["status"] in {"unchanged", "largely_unchanged"} and _same_endpoint(diagnostic, previous)
         and _complete(title_previous) and diagnostic.get("title") == title_previous.get("title") == previous.get("title")
         and _route_key(baseline.get("text_route", {})) == _route_key(getattr(capture, "capture_route", {})))
-    diagnostic["structure_comparison"] = ("unchanged" if _same_structure(diagnostic, previous) else
-        "changed" if _structure_known(diagnostic) and _structure_known(previous) else "unavailable")
     if not previous:
         if current_comparable:
             diagnostic["web_change"] = "first_observation"
     elif text_mode and text_complete(diagnostic) and text_complete(previous) and diagnostic.get("content_version") == previous.get("content_version"):
         diagnostic["web_change"] = ("structure_changed" if diagnostic["structure_comparison"] == "changed" else
+            "minor_content_update" if stable_structure and structure["status"] == "largely_unchanged" else
             "text_only_update" if stable_structure and diagnostic.get("text_sha256") != previous.get("text_sha256") else
             "text_changed" if diagnostic.get("text_sha256") != previous.get("text_sha256") else
             "structure_changed" if diagnostic.get("content_sha256") != previous.get("content_sha256") else "unchanged")
@@ -182,7 +194,7 @@ def compare(capture, domain, row, diagnostic):
         return False
     if policy.get("mode", "full") != "changes":
         return recapture("full_report")
-    if diagnostic["web_change"] not in {"unchanged", "text_only_update"}:
+    if diagnostic["web_change"] not in {"unchanged", "text_only_update", "minor_content_update"}:
         if diagnostic["web_change"] != "unknown":
             return recapture(diagnostic["web_change"])
         if not current_comparable:
@@ -200,7 +212,7 @@ def compare(capture, domain, row, diagnostic):
     # an explicitly recorded earlier skip against that same image.
     structure_lineage = stable_structure and (
         previous.get("baseline_run_id") == image["run_id"]
-        and previous.get("skip_reason") in {"unchanged_content", "text_only_update", "unchanged_structure"}
+        and previous.get("skip_reason") in {"unchanged_content", "text_only_update", "minor_content_update", "unchanged_structure"}
         or image_probe.get("content_sha256") == previous.get("content_sha256")
         and image_probe.get("content_version") == previous.get("content_version")
         and image_probe.get("title") == previous.get("title") and _same_endpoint(image_probe, previous))
@@ -209,9 +221,15 @@ def compare(capture, domain, row, diagnostic):
     if text_mode:
         # An exact prose hash must not overrule known layout differences (for
         # example, a prior browser failure after a stylesheet/markup change).
+        image_structure = _structure_comparison(diagnostic, image_probe)
+        diagnostic["capture_layout_comparison"] = image_structure
         comparable = text_complete(image_probe) and (
-            _same_structure(diagnostic, image_probe) if _structure_known(image_probe)
+            image_structure["status"] in {"unchanged", "largely_unchanged"} if _structure_known(image_probe)
             else exact_content or structure_lineage)
+        if image_structure["status"] == "changed" and image_structure["reason"] in {"layout_changed", "key_elements_changed"}:
+            # Small updates must not accumulate indefinitely: measure against
+            # the actual saved image too, not just the immediately prior check.
+            diagnostic["web_change"] = "structure_changed"
     else:
         comparable = _complete(image_probe)
     if (not comparable or image_probe.get("title") != diagnostic.get("title")
@@ -234,7 +252,7 @@ def compare(capture, domain, row, diagnostic):
             return recapture("periodic_refresh")
     except (AttributeError, KeyError, TypeError, ValueError, OSError, RuntimeError):
         return recapture("image_baseline_unavailable")
-    reason = ("text_only_update" if diagnostic["web_change"] == "text_only_update" else
+    reason = (diagnostic["web_change"] if diagnostic["web_change"] in {"text_only_update", "minor_content_update"} else
               "unchanged_structure" if text_mode and not exact_content else
               "unchanged_content" if text_mode else "unchanged_title")
     diagnostic.update(skip_reason=reason, capture_decision="skip", capture_reason=reason, baseline_run_id=image["run_id"])
@@ -245,6 +263,7 @@ CHANGE_LABELS = {"first_observation": "First website observation", "first_title_
                  "first_text_observation": "First comparable page text", "text_changed": "Page text changed",
                  "structure_changed": "Static page structure, resources or form/link details changed",
                  "text_only_update": "Wording changed · static structure and title unchanged",
+                 "minor_content_update": "Minor content update · title and overall static layout match",
                  "title_changed": "Title changed",
                  "endpoint_changed": "HTTP endpoint changed", "became_available": "Website now responds",
                  "became_unavailable": "Website stopped responding"}
@@ -268,7 +287,8 @@ CAPTURE_REASONS = {
     "unchanged_title": "The fresh title and endpoint matched a valid saved screenshot; capture was skipped.",
     "unchanged_content": "The fresh content, title and endpoint matched a valid saved screenshot; capture was skipped.",
     "text_only_update": "Only extracted wording changed; the complete static structure, resources, forms/links, title and endpoint matched. Browser capture was skipped.",
-    "unchanged_structure": "Static structure and title still match the saved image baseline; older wording does not require another browser capture.",
+    "minor_content_update": "The title, key page elements and overall static layout matched; minor wording, article-link or content-image changes did not request another browser capture.",
+    "unchanged_structure": "Overall static layout and title still match the saved image baseline; older minor content does not require another browser capture.",
     "title_rule": "A configured title exclusion matched; capture was skipped.",
     "duplicate_body": "The complete fetched HTTP and HTTPS HTML matched; a duplicate browser capture was skipped.",
     "no_http_response": "No HTTP response was observed; capture was skipped.",
@@ -317,7 +337,7 @@ def website_network_notes(captures):
 def website_text_notes(captures):
     """Keep minor prose diffs outside the main changes-only screenshot cards."""
     return sorted((capture for capture in captures
-        if capture.get("preflight", {}).get("web_change") == "text_only_update"
+        if capture.get("preflight", {}).get("web_change") in {"text_only_update", "minor_content_update"}
         and capture.get("preflight", {}).get("skip_reason") not in {"title_rule", "duplicate_body"}
         and capture.get("preflight", {}).get("report_exclusion") != "browser_title_rule"),
         key=lambda capture: (capture["domain"], capture["scheme"]))
@@ -335,7 +355,7 @@ def report_entries(captures, mode="changes"):
             continue
         if probe.get("skip_reason") in {"title_rule", "duplicate_body"} or probe.get("report_exclusion") == "browser_title_rule":
             continue
-        if mode == "changes" and probe.get("skip_reason") in {"unchanged_title", "unchanged_content", "unchanged_structure", "text_only_update"}:
+        if mode == "changes" and probe.get("skip_reason") in {"unchanged_title", "unchanged_content", "unchanged_structure", "text_only_update", "minor_content_update"}:
             continue
         change = probe.get("web_change")
         label = CHANGE_LABELS.get(change)

@@ -241,32 +241,45 @@ running. Run details show its saved rule list. Title comparisons continue when
 both exclusion lists are off.
 
 Routine scans default to **Changes only**. Every run refreshes DNS and
-HTTP/HTTPS checks; subdomain enumeration is independent. The project
-**Screenshot and report policy** defaults to **Title + static structure**, with
-**Titles only** available as a lighter option. Text mode reads up to 512 KiB of
-static HTML and retains at most 12,000 readable characters. Complete HTML also
-gets a versioned structure fingerprint: element order, selected layout attributes,
-resource references, inline script/style code and form/link details. Visible prose,
-prose labels, nonces and hidden input values do not contribute to that structure
-fingerprint. Resource file contents and rendered layout are not fetched/compared.
+HTTP/HTTPS checks; subdomain enumeration is independent. **Title + static
+structure** remains the default comparison; **Titles only** is a lighter option.
+Text mode reads up to 512 KiB of static HTML and retains at most 12,000 readable
+characters. Complete bodies retain the original exact structure hash and a
+bounded, versioned overall-layout profile from the same parsing pass.
 
-A wording-only change with the same complete static structure, title, endpoint
-and website route goes to a collapsed **Text-only updates** log. With a valid saved
-image baseline, changes-only scans skip Gowitness **before the browser queue**;
-this is not just report filtering. The text diff and its source report remain
-available. Later unchanged scans keep using that image baseline despite its older
-wording, instead of recapturing the page on the following run. New pages and
-changes to titles, structure, resources or form/link details remain browser-eligible.
-A structure change takes priority even when the readable text also changed.
+The profile compares counts of element/layout patterns in their surrounding
+markup, ignoring ordinary wording, article-link destinations, content-image URLs,
+CMS post identifiers and embedded script values. At least **95% structural overlap**
+is required for larger pages (40+ elements and 8+ distinct patterns); short/generic
+pages require an exact profile match. This is a static HTML heuristic, not a
+rendered layout, image or semantic similarity score. Form actions/fields, semantic
+navigation links, primary containers, identified logo images, stylesheet/external
+script references, inline CSS, embedded frames and redirect directives have a
+separate exact check. A major change to one of these cannot be hidden by many
+unchanged article cards. Adding/removing inline scripts remains meaningful, while
+their changing embedded values do not invalidate the profile.
 
-Full capture mode, configured periodic refreshes, missing/mismatched image
-baselines and incomplete/unreadable/sparse checks can still request screenshots.
-A text-only log row records the actual browser decision. Prior reports have no
-structure fingerprint, so fresh comparable observations are needed before a text
-change can be treated as wording-only. The old text hash remains compatible;
-existing reports and screenshots are preserved. Static markup cannot establish
-that a remotely updated CSS/image file or JavaScript-rendered layout is unchanged.
-Screenshots remain for manual visual review.
+Small page updates with the same title, endpoint and website route go to a
+collapsed **Minor page updates** log, with their text diff, structural overlap and
+actual browser decision. A valid matching screenshot baseline lets changes-only
+scans skip Gowitness **before the browser queue**. Article/recommendation turnover
+can therefore stay out of the main screenshot cards. New pages, changed titles,
+key-element changes and larger layout differences remain browser-eligible.
+
+The current layout is checked against both the latest reliable observation and
+the saved image baseline, so gradual small changes cannot accumulate indefinitely
+without a fresh capture. Later unchanged scans do not recapture merely because
+the image contains older wording. Full capture mode, configured periodic refreshes,
+missing/mismatched image baselines and incomplete/unreadable/sparse checks can
+still request screenshots. Exclusions continue to apply in both modes.
+
+Prior reports have no overall-layout profile. Their exact fingerprints remain
+usable, but tolerant comparison requires fresh complete profiles on both sides;
+the first scan after this update may still establish that baseline. Existing
+reports are not reclassified from titles or screenshots alone. If a profile exceeds
+its 512-pattern/depth/time bounds, exact comparison remains the fallback. Resource
+file contents and browser-rendered layout are not fetched/compared. Screenshots
+remain for manual visual review.
 
 Each report entry has **Capture decision**, explaining full mode, periodic
 refresh, an uncertain check, a missing/mismatched image baseline or a changed
@@ -297,8 +310,8 @@ observations; DNS totals appear underneath as side notes. DNS state and discover
 inventory already accumulate across runs. Changed IP answer sets remain in a
 collapsed **DNS side notes** section. HTTP destination/status, TLS and connection
 changes have their own collapsed network notes and cannot by themselves add
-a website-change card. Title/structure/form/link differences still count;
-wording-only differences with complete matching structure evidence are logged separately. Older
+a website-change card. Title, key-element and larger layout differences still
+count; minor page updates are logged separately when comparable evidence exists. Older
 network-only entries also stay out of changes-only cards; stored evidence and
 full-report views are retained.
 

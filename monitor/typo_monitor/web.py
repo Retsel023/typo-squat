@@ -137,6 +137,8 @@ def _capture_status(attempt):
         return "Text unchanged · capture skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "text_only_update":
         return "Wording-only update · Gowitness skipped"
+    if (attempt.get("preflight") or {}).get("skip_reason") == "minor_content_update":
+        return "Minor content update · Gowitness skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_structure":
         return "Structure and title unchanged · Gowitness skipped"
     if (attempt.get("preflight") or {}).get("skip_reason") == "unchanged_title":
@@ -726,7 +728,7 @@ def create_app(service):
         text_page_arg = request.args.get("text_page", "1")
         if (not text_page_arg.isascii() or not text_page_arg.isdigit()
                 or len(text_page_arg) > 8 or int(text_page_arg) < 1):
-            abort(400, description="Choose a valid text-only updates page.")
+            abort(400, description="Choose a valid minor page updates page.")
         text_total = len(text_notes)
         text_pages = max(1, (text_total + 99) // 100)
         text_page = min(int(text_page_arg), text_pages)
