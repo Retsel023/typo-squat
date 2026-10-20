@@ -19,6 +19,8 @@ from .domains import normalize_domain, parse_domains
 from .text_review import review_selection
 from .progress import read_progress, read_tool_output
 from .body_groups import group_report_entries
+from .capture_images import has_capture_image as _has_capture_image, saved_capture as _saved_capture
+from .inventory_filters import DEFAULTS as INVENTORY_DEFAULTS, OPTIONS as INVENTORY_OPTIONS, normalize_options
 
 
 DOMAIN_LABELS = {
@@ -83,22 +85,6 @@ def _csv_cell(value):
     return text
 
 
-def _has_capture_image(capture):
-    if not isinstance(capture, dict) or capture.get("status") != "captured":
-        return False
-    relative = capture.get("relative_path")
-    if not isinstance(relative, str) or not relative or "\\" in relative:
-        return False
-    path = Path(relative)
-    if path.is_absolute() or ".." in path.parts or path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-        return False
-    try:
-        UUID(capture.get("run_id", ""))
-    except (ValueError, TypeError, AttributeError):
-        return False
-    return capture.get("scheme") in {"http", "https"}
-
-
 def _website_report_groups(captures, mode, *, include_context=False):
     from .capture_changes import report_entries
     entries = report_entries(captures, mode, include_context=include_context)
@@ -107,21 +93,6 @@ def _website_report_groups(captures, mode, *, include_context=False):
     # Keep all observations in the groups so domain lists and detail links do
     # not change when an endpoint has no screenshot. Visibility is separate.
     return entries, group_report_entries(entries)
-
-
-def _saved_capture(attempt):
-    probe = attempt.get("preflight", {}) if isinstance(attempt, dict) else {}
-    if probe.get("skip_reason") in {"title_rule", "duplicate_body"} or probe.get("report_exclusion") == "browser_title_rule":
-        return None
-    if _has_capture_image(attempt):
-        return attempt
-    previous = attempt.get("previous_capture") if isinstance(attempt, dict) else None
-    if previous and previous.get("preflight", {}).get("report_exclusion") == "browser_title_rule":
-        return None
-    if (_has_capture_image(previous) and previous.get("domain") == attempt.get("domain")
-            and previous.get("scheme") == attempt.get("scheme") and previous.get("project_id") == attempt.get("project_id")):
-        return previous
-    return None
 
 
 def _capture_status(attempt):
@@ -250,9 +221,14 @@ def create_app(service):
                 seed = normalize_domain(seed)
             except ValueError:
                 abort(400, description="Choose a valid source domain.")
+        try:
+            options = normalize_options({key: request.args.get(key, default).strip() for key, default in INVENTORY_DEFAULTS.items()})
+        except ValueError as error:
+            abort(400, description=str(error))
         return {"query": request.args.get("q", "").strip()[:253], "status": status,
                 "seed": seed, "hide_parked": request.args.get("hide_parked", "") == "1",
-                "include_seeds": request.args.get("include_seeds", "") == "1"}
+                "include_seeds": request.args.get("include_seeds", "") == "1",
+                **{key: value for key, value in options.items() if value != INVENTORY_DEFAULTS[key]}}
 
     def selected_view():
         view = request.args.get("view", "gallery")
@@ -263,7 +239,8 @@ def create_app(service):
     def filter_parameters(filters, view):
         return {"status": filters["status"], "q": filters["query"], "view": view,
                 "hide_parked": "1" if filters["hide_parked"] else "0",
-                "include_seeds": "1" if filters["include_seeds"] else "0"}
+                "include_seeds": "1" if filters["include_seeds"] else "0",
+                **{key: filters[key] for key in INVENTORY_DEFAULTS if key in filters}}
 
     @app.get("/")
     def dashboard():
@@ -329,8 +306,7 @@ def create_app(service):
             page_number = page_count
             result = service.store.query_domains(str(project_id), **filters,
                                                  limit=page_size, offset=(page_number - 1) * page_size)
-        groups = service.store.source_groups(str(project_id), query=query, status=status,
-                                             hide_parked=hide_parked, include_seeds=include_seeds)
+        groups = service.store.source_groups(str(project_id), **{key: value for key, value in filters.items() if key != "seed"})
         # Roots act as section labels; related discovered subdomains stay beside them.
         source_sections = [{"root": root, "groups": []} for root in project["roots"]]
         other_sources = []
@@ -350,6 +326,14 @@ def create_app(service):
                         if seed else result["total"])
         default_count = service.store.query_domains(str(project_id), status="resolved", include_seeds=False, limit=1)["total"]
         filter_params = filter_parameters(filters, view)
+        active_filters = [{"label": INVENTORY_OPTIONS[key][filters[key]] if key in INVENTORY_OPTIONS else "Exclude: " + filters[key],
+                           "url": url_for("project_detail", project_id=project_id, seed=seed,
+                                          **{name: value for name, value in filter_params.items() if name != key}, _anchor="inventory")}
+                          for key in INVENTORY_DEFAULTS if key in filters]
+        presets = [{"label": label, "url": url_for("project_detail", project_id=project_id, view=view, _anchor="inventory", **values)}
+            for label, values in (("All resolving", {}), ("New additions", {"activity": "new"}),
+                ("Screenshots only", {"screenshots": "with"}), ("Website changes", {"activity": "priority"}),
+                ("DNS changes", {"activity": "dns", "status": ""}), ("DNS only", {"activity": "dns_only"}))]
         history_text = request.args.get("history_page", "1")
         if not history_text.isascii() or not history_text.isdigit() or len(history_text) > 8 or int(history_text) < 1:
             abort(400, description="Choose a valid scan history page number.")
@@ -376,6 +360,10 @@ def create_app(service):
         proxy_settings = public_settings(service.store.proxy_settings(str(project_id)))
         return render_template("project.html", project=project, domains=[_prepare_domain(item) for item in result["items"]],
                                counts=counts, query=query, status_filter=status,
+                               inventory_filters={**INVENTORY_DEFAULTS, **filters}, inventory_options=INVENTORY_OPTIONS,
+                               active_inventory_filters=active_filters, inventory_presets=presets,
+                               activity_run=result.get("activity_run"),
+                               advanced_filters_open=any(key in filters for key in INVENTORY_DEFAULTS if key not in {"activity", "screenshots"}),
                                runs=runs, last_run=last_run, page="project", history_page=history_page,
                                history_has_more=len(history_rows) > 20,
                                demo=bool(last_run and "demo" in last_run.get("source_status", {})),
@@ -392,7 +380,7 @@ def create_app(service):
                                tor_proxy_endpoint=tor_proxy_url(),
                                gallery_params={**filter_params, "view": "gallery"},
                                table_params={**filter_params, "view": "table"},
-                               has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved"))
+                               has_custom_filters=bool(query or seed or hide_parked or include_seeds or status != "resolved" or active_filters))
 
     @app.get("/projects/<uuid:project_id>/candidates/<domain>")
     def candidate_detail(project_id, domain):
@@ -844,21 +832,49 @@ def create_app(service):
         filters = selected_filters()
         output = io.StringIO(newline="")
         writer = csv.writer(output)
-        writer.writerow(["domain", "status", "latest_observation", "last_known_records", "first_seen", "last_seen", "last_checked", "missing_count", "last_error", "source_domains", "is_original", "parking_status", "parking_provider", "parking_evidence"])
+        from .report_exports import INVENTORY_DNS_FIELDS, INVENTORY_WEBSITE_FIELDS, inventory_website_values, record_text as csv_records
+        writer.writerow(["domain", "status", "latest_observation", "last_known_records", "first_seen", "last_seen", "last_checked", "missing_count", "last_error", "source_domains", "is_original", "parking_status", "parking_provider", "parking_evidence", *INVENTORY_DNS_FIELDS, *INVENTORY_WEBSITE_FIELDS])
         for domain in service.store.export_domains(str(project_id), **filters):
             record_text = "; ".join(f"{kind} {value}".strip() for kind, value in _records(domain.get("records")))
             parking = domain.get("parking") or {}
             evidence = parking.get("evidence", "")
             if isinstance(evidence, list):
                 evidence = "; ".join(map(str, evidence))
+            event = domain.get("latest_dns_event") or {}
             values = [domain.get("domain"), domain.get("status"), domain.get("latest_observation"), record_text,
                       domain.get("first_seen"), domain.get("last_seen"), domain.get("last_checked"),
                       domain.get("missing_count", 0), domain.get("last_error"),
                       "; ".join(domain.get("sources", [])), domain.get("is_seed", False),
-                      parking.get("status", "unknown"), parking.get("provider"), evidence]
+                      parking.get("status", "unknown"), parking.get("provider"), evidence,
+                      domain.get("latest_scan_id"), event.get("kind"), csv_records(event.get("before", [])), csv_records(event.get("after", [])),
+                      *inventory_website_values(domain)]
             writer.writerow([_csv_cell(value) for value in values])
         return Response(output.getvalue(), mimetype="text/csv", headers={
             "Content-Disposition": f'attachment; filename="domain-findings-{project_id}.csv"',
+        })
+
+    @app.get("/runs/<uuid:run_id>/export.csv")
+    def export_report(run_id):
+        snapshot = service.store.report_export_snapshot(str(run_id))
+        if snapshot is None:
+            abort(404, description="This saved scan report could not be found.")
+        run = snapshot["run"]
+        project = project_or_404(run["project_id"])
+        if run["status"] not in {"completed", "partial"}:
+            abort(409, description="CSV reports are available after a scan completes.")
+        website_view = request.args.get("website_view", "priority")
+        body_view = request.args.get("body_view", "all")
+        if website_view not in {"priority", "all"} or body_view not in {"all", "shared", "individual"}:
+            abort(400, description="Choose a valid website report view.")
+        from .report_exports import REPORT_FIELDS, report_rows
+        output = io.StringIO(newline="")
+        writer = csv.DictWriter(output, fieldnames=REPORT_FIELDS)
+        writer.writeheader()
+        for row in report_rows(project, run, snapshot["captures"], snapshot["observations"],
+                               website_view=website_view, body_view=body_view):
+            writer.writerow({key: _csv_cell(value) for key, value in row.items()})
+        return Response(output.getvalue(), mimetype="text/csv", headers={
+            "Content-Disposition": f'attachment; filename="scan-report-{run_id}-{website_view}-{body_view}.csv"',
         })
 
     for error_code in (400, 404, 409, 413):

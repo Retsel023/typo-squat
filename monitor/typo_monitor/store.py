@@ -1072,6 +1072,22 @@ class Store:
             return [self._capture(row) for row in db.execute(
                 "SELECT * FROM captures WHERE run_id=? ORDER BY domain,scheme", (run_id,))]
 
+    def report_export_snapshot(self, run_id):
+        """Read one saved report and its own DNS/capture evidence atomically."""
+        with self._connection() as db:
+            db.execute("BEGIN")
+            run = self._run(db.execute("SELECT * FROM runs WHERE id=? AND report_deleted=0", (run_id,)).fetchone())
+            if run is None:
+                return None
+            captures = [self._capture(row) for row in db.execute(
+                "SELECT * FROM captures WHERE run_id=? AND project_id=? ORDER BY domain,scheme", (run_id, run["project_id"]))]
+            observations = {row["domain"]: {"status": row["status"], "records": json.loads(row["records_json"])}
+                for row in db.execute("""SELECT o.domain,o.status,o.records_json FROM observations o WHERE o.run_id=? AND
+                    (o.domain IN (SELECT domain FROM captures WHERE run_id=?) OR
+                     o.domain IN (SELECT json_extract(value,'$.domain') FROM json_each(?)))""",
+                    (run_id, run_id, _json(run["events"])))}
+            return {"run": run, "captures": captures, "observations": observations}
+
     def capture_baselines(self, project_id):
         """Latest trustworthy evidence per endpoint, across accepted history.
 
@@ -1210,7 +1226,7 @@ class Store:
             return counts
 
     @staticmethod
-    def _domain_filter(project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True):
+    def _domain_filter(project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True, **options):
         if (not isinstance(query, str) or not isinstance(status, str)
                 or status not in {"", "resolved", "pending_missing", "missing", "unknown"}):
             raise ValueError("Invalid domain search or status filter.")
@@ -1218,10 +1234,6 @@ class Store:
             raise ValueError("Invalid domain source or parking filter.")
         where = "d.project_id=?"
         parameters = [project_id]
-        if query:
-            literal = query.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            where += " AND d.domain LIKE ? ESCAPE '\\'"
-            parameters.append("%" + literal + "%")
         if status:
             where += " AND d.status=?"
             parameters.append(status)
@@ -1235,40 +1247,62 @@ class Store:
             where += " AND NOT EXISTS(SELECT 1 FROM domain_enrichment e WHERE e.project_id=d.project_id AND e.domain=d.domain AND e.parking_status='likely_parked')"
         if not include_seeds:
             where += " AND NOT EXISTS(SELECT 1 FROM inventory i WHERE i.project_id=d.project_id AND i.domain=d.domain AND i.kind='seed')"
+        from .inventory_filters import conditions
+        extra, values = conditions(project_id, query=query.strip(), **options)
+        where += "".join(" AND (" + clause + ")" for clause in extra)
+        parameters.extend(values)
         return where, parameters
 
-    def query_domains(self, project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True, limit=100, offset=0):
+    def query_domains(self, project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True, limit=100, offset=0, **options):
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 1000:
             raise ValueError("Page limit must be between 1 and 1000.")
         if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
             raise ValueError("Page offset must be a nonnegative integer.")
         where, parameters = self._domain_filter(project_id, query=query, status=status, seed=seed,
-                                                  hide_parked=hide_parked, include_seeds=include_seeds)
+                                                  hide_parked=hide_parked, include_seeds=include_seeds, **options)
+        from .inventory_filters import LATEST_RUN, ORDER, register_functions
         with self._connection() as db:
             db.execute("BEGIN")
             self._require_project(db, project_id)
+            register_functions(db, project_id)
             total = db.execute(f"SELECT COUNT(*) FROM domain_states d WHERE {where}", parameters).fetchone()[0]
             rows = db.execute(
-                self._STATE_QUERY + f" WHERE {where} ORDER BY d.domain LIMIT ? OFFSET ?",
+                self._STATE_QUERY + f" WHERE {where} ORDER BY {ORDER[options.get('sort', 'domain')]} LIMIT ? OFFSET ?",
                 [*parameters, limit, offset],
             ).fetchall()
-            return {"items": self._public_states(db, project_id, rows), "total": total}
+            result = {"items": self._public_states(db, project_id, rows), "total": total}
+            if options.get("activity"):
+                activity_run = db.execute("SELECT r.id,r.started_at,r.finished_at,r.is_baseline " + LATEST_RUN, (project_id,)).fetchone()
+                result["activity_run"] = dict(activity_run) if activity_run else None
+            return result
 
-    def export_domains(self, project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True):
+    def export_domains(self, project_id, *, query="", status="", seed="", hide_parked=False, include_seeds=True, **options):
         """Read the entire filtered view, including metadata, in one snapshot."""
         where, parameters = self._domain_filter(project_id, query=query, status=status, seed=seed,
-                                                  hide_parked=hide_parked, include_seeds=include_seeds)
+                                                  hide_parked=hide_parked, include_seeds=include_seeds, **options)
+        from .inventory_filters import ORDER, register_functions
         with self._connection() as db:
             db.execute("BEGIN")
             self._require_project(db, project_id)
-            rows = db.execute(self._STATE_QUERY + f" WHERE {where} ORDER BY d.domain", parameters).fetchall()
-            return self._public_states(db, project_id, rows)
+            register_functions(db, project_id)
+            rows = db.execute(self._STATE_QUERY + f" WHERE {where} ORDER BY {ORDER[options.get('sort', 'domain')]}", parameters).fetchall()
+            items = self._public_states(db, project_id, rows)
+            from .inventory_filters import LATEST_RUN
+            latest = db.execute("SELECT r.id,r.events_json " + LATEST_RUN, (project_id,)).fetchone()
+            events = {event["domain"]: event for event in json.loads(latest["events_json"])} if latest else {}
+            for item in items:
+                item["latest_dns_event"] = events.get(item["domain"])
+                item["latest_scan_id"] = latest["id"] if latest else None
+            return items
 
-    def source_groups(self, project_id, *, status="resolved", hide_parked=False, include_seeds=False, query=""):
+    def source_groups(self, project_id, *, status="resolved", hide_parked=False, include_seeds=False, query="", **options):
         where, parameters = self._domain_filter(project_id, query=query, status=status,
-                                                  hide_parked=hide_parked, include_seeds=include_seeds)
+                                                  hide_parked=hide_parked, include_seeds=include_seeds, **options)
+        from .inventory_filters import register_functions
         with self._connection() as db:
+            db.execute("BEGIN")
             self._require_project(db, project_id)
+            register_functions(db, project_id)
             rows = db.execute(f"""SELECT COALESCE(s.seed,'__unattributed__') AS seed,COUNT(*) AS total
                 FROM domain_states d LEFT JOIN candidate_sources s
                     ON s.project_id=d.project_id AND s.domain=d.domain

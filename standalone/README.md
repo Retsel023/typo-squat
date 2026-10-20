@@ -461,6 +461,34 @@ findings still publish together at the end. Stop scan discards unfinished work.
 The dnspython alternative remains DNS-first. Live pipeline progress displays
 separate DNS, web-check and capture counts.
 
+## Filter findings and export CSV
+
+The project findings gallery/table has quick filters for **New additions**,
+**Screenshots only**, **Website changes**, **DNS changes** and **DNS only**.
+Combine these with domain/title search, excluded text, screenshot state,
+HTTP response/status, protocol, title exclusions, parking signals, DNS record
+type and sorting. Counts, source groups, pagination and **Export filtered CSV**
+use the same complete filtered view. CSV includes HTTP/HTTPS titles/statuses and
+saved screenshot availability/dates alongside DNS before/after and source data.
+
+Change filters use the latest nondeleted completed scan, including completed
+scans with gaps; its date appears below the filters. New additions mean first
+successful DNS observations. DNS events start after a baseline. DNS-only requires
+unchanged checks under the saved comparison policy for both protocols, or your
+selected single protocol. Uncertain/missing checks do not qualify. Other website
+filters use each protocol's latest saved attempt; screenshot availability includes
+the gallery's older-image fallback. Title exclusions use recorded matches and
+currently enabled global/project phrases without changing old scan decisions.
+
+Each completed saved report and scan-history entry also offers **Export report
+CSV**. It exports all pages in the selected priority/all and body view, plus the
+report's screenshot-unavailable, context and DNS/network side notes. A section
+column and scan-summary row distinguish records. Saved page text/diffs and
+comparison details have separate columns. Titles, statuses, DNS values and
+screenshot flags are the saved report's observations; older reports never borrow
+new DNS values or screenshots. Exporting does not run tools or AI. CSV escapes
+spreadsheet formulas, and deleted/unfinished reports are unavailable.
+
 ## Browser performance
 
 Open **Screenshot and report policy → Website and browser performance** to set

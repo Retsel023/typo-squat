@@ -473,6 +473,13 @@ def website_text_notes(captures):
     return [groups[domain] for domain in sorted(groups)]
 
 
+def substantial_layout_change(probe):
+    comparisons = [probe.get("capture_layout_comparison") or {},
+                   {"similarity": probe.get("layout_similarity"), "status": probe.get("structure_comparison")}]
+    return any(item.get("status") == "changed" and type(item.get("similarity")) in {int, float}
+               and item["similarity"] < 85 for item in comparisons)
+
+
 def review_priority(capture):
     """Report prominence is independent of why the browser was requested.
 
@@ -488,10 +495,7 @@ def review_priority(capture):
         return "major", "Website title changed"
     if probe.get("form_change") == "changed":
         return "major", "Form actions or field purposes changed"
-    comparisons = [probe.get("capture_layout_comparison") or {},
-                   {"similarity": probe.get("layout_similarity"), "status": probe.get("structure_comparison")}]
-    if any(item.get("status") == "changed" and type(item.get("similarity")) in {int, float}
-           and item["similarity"] < 85 for item in comparisons):
+    if substantial_layout_change(probe):
         return "major", "Substantial static layout change"
     if change in {"text_only_update", "minor_content_update"}:
         return "context", "Content update · title and overall static layout matched"

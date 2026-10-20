@@ -782,6 +782,40 @@ does not alter the DNS change history. This is a DNS heuristic, not a website
 content check or a claim that a domain is safe. See [parking rules](../docs/PARKING.md)
 and [discovery options](../docs/DISCOVERY.md).
 
+Project findings support combined filters before pagination, source counts and
+CSV export. Search includes domain names and saved HTML/browser titles; **Exclude
+domain or title text** removes a literal phrase. Quick links open new additions,
+saved screenshots, priority website changes, DNS changes or DNS-only changes.
+Further filters cover title/form/layout changes, minor context updates, unchanged
+pages, missing/failed/skipped captures, HTTP status classes, complete/incomplete
+text, protocol, title exclusions, parking signals and last-known DNS record type.
+Sort by domain, first successful DNS observation or latest DNS check. Active
+filters can be removed individually and survive source/view/page navigation.
+
+Changes refer to the latest nondeleted completed/partial scan, whose date is
+shown. New additions mean first successful DNS observations, including an initial
+baseline; DNS events begin with later comparisons. **DNS changed · website
+unchanged** requires matching website observations for both HTTP and HTTPS by
+default, or the selected single protocol, under that scan's comparison policy.
+Missing/uncertain checks cannot establish unchanged content. Other website
+filters use each protocol's latest saved attempt. Screenshot availability follows
+the gallery's previous-image fallback and exclusions. Title-exclusion filtering
+uses recorded matches and currently enabled global/project title phrases; it
+does not rewrite saved scan decisions. Filters do not change the scan inventory.
+
+**Export filtered CSV**, beside the findings filters, exports every matching
+domain across all pages in the selected order. It includes DNS/provenance and
+parking data, DNS before/after values, HTTP/HTTPS titles/statuses, saved screenshot
+availability/dates and website change labels. **Export report CSV** is available on completed saved scans
+and in scan history. It exports all pages of the selected priority/all and body
+view, plus that report's screenshot-unavailable log, context and DNS/network side
+notes. A section column separates these records, with a scan-summary row even
+when nothing matches. DNS values come from that scan's observation snapshot,
+not newer project state. Saved page text/diffs and comparison details remain
+available as separate columns. Report screenshot flags refer only to that scan's
+own images. CSV cells escape spreadsheet formulas; images and AI calls are not part
+of exporting. Deleted and unfinished reports cannot be exported.
+
 The default gallery shows dated HTTP/HTTPS captures. Candidate review includes
 full images, previous/current comparisons, original-source reference captures,
 and attempt history. Failed attempts can display a clearly dated older image.

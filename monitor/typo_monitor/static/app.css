@@ -16,6 +16,26 @@
 
 /* Focused findings, grouped by their original root or discovered subdomain. */
 .findings-filters{flex-direction:column;align-items:stretch;gap:14px}
+.inventory-actions{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:10px 15px}
+.inventory-presets{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:0 24px 17px}
+.inventory-presets a{padding:5px 9px;border:1px solid #dfe7d7;border-radius:5px;background:#f8fbf4;color:#536e47;font-size:11px}
+.inventory-presets a:hover{background:#eaf2e3;border-color:#bdd1ad}
+.inventory-primary-filters,.inventory-filter-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px 18px}
+.inventory-primary-filters>label,.inventory-filter-grid>label{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#5c7050;min-width:0}
+.findings-filters .inventory-primary-filters select,.findings-filters .inventory-filter-grid select,.inventory-filter-grid input{width:100%;max-width:none;min-width:0;border:1px solid #dce5d3;border-radius:6px;background:#fff;color:#526b47;font-size:12px;min-height:37px;padding:8px 10px}
+.inventory-advanced{border:1px solid #e3eadc;border-radius:7px;background:#fcfdf9;padding:11px 13px}
+.inventory-advanced>summary{cursor:pointer;font-size:11px;color:#5e7552;line-height:1.7}
+.inventory-advanced[open]>.inventory-filter-grid{margin-top:15px}
+.inventory-filter-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.inventory-active-filters{display:flex;flex-wrap:wrap;gap:7px}
+.inventory-active-filters .filter-chip{white-space:normal;display:inline-flex;align-items:center;gap:9px}
+.inventory-filter-scope{font-size:11px;line-height:1.8;color:#6f8062}
+.findings-filters .results-help[open]{flex-basis:100%;margin-left:0}
+.findings-filters .results-help p{position:static;width:auto;max-width:850px;box-shadow:none;margin-top:9px}
+.report-export-help{font-size:11px;line-height:1.8;padding:0 24px 16px;color:#6b7e60}
+.report-csv-link{display:block;font-size:11px;margin-top:6px}
+@media(max-width:980px){.inventory-filter-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.inventory-primary-filters,.inventory-filter-grid{grid-template-columns:1fr}.inventory-presets{padding:0 17px 15px;gap:6px}.inventory-presets a{font-size:10px}.inventory-actions{align-items:flex-end;flex-direction:column;gap:8px}.report-export-help{padding:0 17px 15px}.inventory-advanced{padding:10px}.inventory-advanced>summary{font-size:10px}}
 .filter-inputs{display:flex;align-items:center;gap:9px;width:100%}
 .filter-inputs .search-field{min-width:140px}
 .filter-inputs select{max-width:220px}
