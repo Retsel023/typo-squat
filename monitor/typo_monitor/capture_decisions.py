@@ -35,7 +35,7 @@ class CaptureDecisionLog:
                 if value is None or type(value) in (bool, int, float):
                     return value
                 if isinstance(value, dict) and depth < 3:
-                    return {str(key)[:80]: small(item, depth + 1) for key, item in list(value.items())[:20]}
+                    return {str(key)[:80]: small(item, depth + 1) for key, item in list(value.items())[:32]}
                 if isinstance(value, (list, tuple)) and depth < 3:
                     return [small(item, depth + 1) for item in value[:20]]
                 return str(value)[:2048]
@@ -65,6 +65,9 @@ class CaptureDecisionLog:
                 "body_comparison": probe.get("body_comparison"),
                 "body_template_version": probe.get("body_template_version"),
                 "body_template_replacements": probe.get("body_template_replacements", 0),
+                "body_content_group_version": probe.get("body_content_group_version"),
+                "body_content_group_status": probe.get("body_content_group_status", "not_recorded"),
+                "body_content_group_ignored_consent": probe.get("body_content_group_ignored_consent", 0),
                 "website_status": probe.get("status"),
                 "final_html_url": probe.get("title_url"),
                 "reason": probe.get("capture_reason"),

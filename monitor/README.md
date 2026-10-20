@@ -318,6 +318,23 @@ suppression still requires exact complete bodies. AI and title exclusions are
 unchanged. Rebuild and start a new scan to collect hostname-normalized template
 metadata; this does not rewrite historical observations.
 
+New scans also collect **Similar content** grouping signatures. These compare
+complete main text, static titles and full link/form collections after excluding
+recognized consent popup containers and normalizing current-host/parent names
+and own HTTP/HTTPS URL schemes. Scripts, styling and images do not enter this
+content signature, so cookie UI or registry logo variations need not produce
+separate report cards. Other destinations, form purposes and main content still
+matter. Short generic text, truncated reads, malformed hidden blocks or a
+spent time budget stay unmatched. Original text/change evidence stays intact;
+this is a report aid, not screenshot equality, provider attribution or a reason
+to skip browser captures. Unknown consent markup can still stay separate.
+
+If no content match is established, the remaining HTTP and HTTPS entries for a
+domain share one **HTTP / HTTPS views** card, with both images and their own
+results. This fallback works with older reports and does not revive observations
+excluded by the scan's report mode or title rules. Similarity normalization
+requires a new scan; screenshot scheduling, AI and DNS behavior are unchanged.
+
 See [text-only n8n review](../docs/N8N.md) and the [suggested AI prompt](../docs/AI_TEXT_PROMPT.md).
 
 With MassDNS, a domain enters this pipeline only after all its A, AAAA and

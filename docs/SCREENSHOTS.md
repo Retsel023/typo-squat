@@ -118,6 +118,41 @@ The existing same-domain HTTP/HTTPS capture deduplication still uses exact
 bodies, never the domain-normalized template fingerprint. No image comparison,
 AI behavior or GoDaddy exclusion logic is changed by grouping.
 
+### Similar main content and protocol fallback
+
+A third, **Similar content** label can connect pages whose complete HTML differs
+but whose normalized main text, static title and full link/form collections
+match. A separate bounded parser ignores recognized consent containers (for
+example Cookiebot, OneTrust, CookieYes, Complianz and common consent-banner IDs)
+without dismissing cookies or changing the saved page text. Scripts, styling
+and image/logo differences do not enter this report-only content signature.
+Generic words such as “cookie” do not trigger removal of arbitrary content.
+
+The grouping signature masks whole tokens for the scanned hostname and its
+parent names down to two labels, allowing registry welcome pages naming
+`nl.gp` versus `nl.kg` to be considered alike. This is a display normalization,
+not an ownership/public-suffix assertion. Own HTTP/HTTPS URL schemes and default
+ports normalize together; unrelated destinations, link paths/queries, form
+purposes, prices, case and other main text remain meaningful. Whitespace is
+collapsed. At least 120 normalized characters and 15 words are required.
+Truncated, sparse, unreadable, unclosed hidden/consent blocks and exhausted
+budgets do not produce a content match. Original observations are unchanged.
+
+These are candidate content groups, not proof of identical HTML, screenshots,
+provider identity or safety. Exact and domain-template matches retain their
+stronger labels. Every member's original image and details stay available.
+Similarity fields are collected on new scans only and never drive Gowitness
+selection, title exclusions, AI selection or change detection. If the optional
+parser runs out of its remaining budget, already completed raw-body evidence
+is retained rather than forcing an extra browser capture.
+
+When unmatched HTTP and HTTPS entries for one domain both remain in the report,
+they appear inside one **HTTP / HTTPS views** card, with independently labelled
+images, titles, capture outcomes and comparisons. This fallback makes no body
+match claim, does not resurrect excluded/unchanged entries, and also works on
+older saved reports after the application rebuild. If one protocol already
+belongs to a shared-content group, its unmatched counterpart remains separate.
+
 Distinct HTTP/HTTPS bodies have separate screenshots. Candidate detail pages can
 show earlier/current screenshots side by side, selected from saved history
 without decoding or comparing their pixels. Historical visual-comparison metadata

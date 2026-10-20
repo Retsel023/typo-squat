@@ -105,6 +105,21 @@ def _validated_preflight(diagnostics, requested):
             raise ValueError("Invalid complete HTML template fingerprint metadata.")
         validated[url].update(body_template_sha256=template_hash, body_template_version=template_version,
                               body_template_replacements=template_count)
+        content_hash = entry.get("body_content_group_sha256")
+        content_version = entry.get("body_content_group_version")
+        consent_count = entry.get("body_content_group_ignored_consent", 0)
+        group_status = entry.get("body_content_group_status", "complete" if content_hash else "unavailable")
+        from .content_groups import CONTENT_GROUP_VERSION, CONTENT_GROUP_STATUSES
+        if (content_hash is not None and (body_status != "complete" or not isinstance(content_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", content_hash) or content_version != CONTENT_GROUP_VERSION)
+                or content_hash is None and content_version is not None
+                or type(consent_count) is not int or not 0 <= consent_count <= MAX_BODY_BYTES
+                or content_hash is None and consent_count != 0
+                or not isinstance(group_status, str) or group_status not in CONTENT_GROUP_STATUSES
+                or (group_status == "complete") != (content_hash is not None)):
+            raise ValueError("Invalid main-content grouping metadata.")
+        validated[url].update(body_content_group_sha256=content_hash, body_content_group_version=content_version,
+                              body_content_group_ignored_consent=consent_count, body_content_group_status=group_status)
         content_status = entry.get("content_status", "disabled")
         page_text = entry.get("page_text", "")
         if (not isinstance(content_status, str) or content_status not in TEXT_STATUSES

@@ -7,7 +7,7 @@ import re
 TEMPLATE_VERSION = "self-host-html-v1"
 
 
-def template_fingerprint(body, charset, hostname):
+def template_fingerprint(body, charset, hostname, *, url=None, title=None, check_budget=None):
     """Keep every other character meaningful; never normalize partial HTML."""
     empty = {"body_template_sha256": None, "body_template_version": None, "body_template_replacements": 0}
     if not hostname:
@@ -30,5 +30,13 @@ def template_fingerprint(body, charset, hostname):
                          + r")(?:\.)?(?![\w.-])", re.IGNORECASE)
     normalized, count = pattern.subn("\x00OWN_HOST\x00", text)
     digest = hashlib.sha256((TEMPLATE_VERSION + "\x00" + normalized).encode("utf-8")).hexdigest()
-    return {"body_template_sha256": digest, "body_template_version": TEMPLATE_VERSION,
-            "body_template_replacements": count}
+    from .content_groups import main_content_fingerprint
+    result = {"body_template_sha256": digest, "body_template_version": TEMPLATE_VERSION,
+              "body_template_replacements": count}
+    try:
+        result.update(main_content_fingerprint(text, hostname, url, title, check_budget))
+    except TimeoutError:
+        result["body_content_group_status"] = "budget"
+    except (ValueError, RecursionError):
+        result["body_content_group_status"] = "unavailable"
+    return result

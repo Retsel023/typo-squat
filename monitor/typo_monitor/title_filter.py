@@ -97,14 +97,18 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
               "title_http_status": response.status_code, "title_bytes": 0,
               "content_status": "missing" if collect_text else "disabled",
               "body_sha256": None, "body_content_type": None, "body_status": "empty",
-              "body_template_sha256": None, "body_template_version": None, "body_template_replacements": 0}
+              "body_template_sha256": None, "body_template_version": None, "body_template_replacements": 0,
+              "body_content_group_sha256": None, "body_content_group_version": None,
+              "body_content_group_ignored_consent": 0, "body_content_group_status": "unavailable"}
     title_parser = None
 
     def failed(status):
         result["title_status"] = status
         result["body_status"] = status
         result.update(body_sha256=None, body_template_sha256=None, body_template_version=None,
-                      body_template_replacements=0)
+                      body_template_replacements=0, body_content_group_sha256=None,
+                      body_content_group_version=None, body_content_group_ignored_consent=0,
+                      body_content_group_status="unavailable")
         if collect_text:
             result["content_status"] = status
         if title_parser is not None and title_parser.complete and not title_parser.truncated:
@@ -211,9 +215,14 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
                 if eof and result["title_bytes"]:
                     result["body_sha256"] = body_hash.hexdigest()
                     from .body_templates import template_fingerprint
-                    remaining()
-                    result.update(template_fingerprint(body_bytes, charset_name, urlsplit(response.url).hostname))
-                    remaining()
+                    try:
+                        remaining()
+                        result.update(template_fingerprint(body_bytes, charset_name, urlsplit(response.url).hostname,
+                            url=current.url, title=result["title"], check_budget=remaining))
+                    except TimeoutError:
+                        # Optional report grouping cannot retract a completed
+                        # body read or change browser eligibility.
+                        result["body_content_group_status"] = "budget"
                 result["body_status"] = "complete" if result["body_sha256"] else "empty" if eof else "truncated"
                 return result
     except (TimeoutError, requests.exceptions.Timeout):
