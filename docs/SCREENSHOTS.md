@@ -146,6 +146,15 @@ selection, title exclusions, AI selection or change detection. If the optional
 parser runs out of its remaining budget, already completed raw-body evidence
 is retained rather than forcing an extra browser capture.
 
+New scans also save a separate main-content fingerprint without the static
+title. An observation with a genuinely missing HTML title can join matching
+main text and link/form structure when that content has exactly one distinct
+nonempty normalized title in the report. Multiple conflicting titles leave
+untitled pages separate; failed/truncated title reads do not qualify as missing.
+The group explains when this fallback was used. Original titles and website
+change detection are unchanged. Older scans without this extra fingerprint
+cannot acquire the missing-title match from screenshots alone.
+
 When unmatched HTTP and HTTPS entries for one domain both remain in the report,
 they appear inside one **HTTP / HTTPS views** card, with independently labelled
 images, titles, capture outcomes and comparisons. This fallback makes no body
@@ -160,6 +169,23 @@ existing links to those groups remain valid. Pairing compares the full lists,
 not just the domain preview, counts or example domain. A partial overlap, or a
 group that already contains both protocols, stays separate. This is a display
 pairing, not an additional content match or a reason to skip either capture.
+
+### Screenshot-free observations
+
+The report's cards show only groups with a recorded current-run image. A
+protocol view with no image is hidden too. Groups still retain their full
+observation/domain lists, including failed members, so an unavailable capture
+does not break domain-list pairing or existing group-detail links. Available
+images take priority when choosing a group's example.
+
+Report entries without an image appear in a separate collapsed **Screenshot
+diagnostics** log below the cards, next to the existing browser-skipped check
+diagnostics. The log is paginated at 100 observations per page and retains
+the domain/history link, protocol, timestamp, error, HTTP result, titles and
+capture decision. It uses the same full/change-only policy and exclusions as
+the report, independently of the shared/other-page tab. No observation or
+image is deleted, no historical image is substituted, and no browser is
+rerun. This view also applies to older saved scans after rebuilding.
 
 Distinct HTTP/HTTPS bodies have separate screenshots. Candidate detail pages can
 show earlier/current screenshots side by side, selected from saved history

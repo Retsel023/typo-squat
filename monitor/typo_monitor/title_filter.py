@@ -98,7 +98,8 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
               "content_status": "missing" if collect_text else "disabled",
               "body_sha256": None, "body_content_type": None, "body_status": "empty",
               "body_template_sha256": None, "body_template_version": None, "body_template_replacements": 0,
-              "body_content_group_sha256": None, "body_content_group_version": None,
+              "body_content_group_sha256": None, "body_content_group_main_sha256": None,
+              "body_content_group_version": None,
               "body_content_group_ignored_consent": 0, "body_content_group_status": "unavailable"}
     title_parser = None
 
@@ -106,7 +107,7 @@ def inspect_title(response, session, deadline, check_cancel, *, collect_text=Fal
         result["title_status"] = status
         result["body_status"] = status
         result.update(body_sha256=None, body_template_sha256=None, body_template_version=None,
-                      body_template_replacements=0, body_content_group_sha256=None,
+                      body_template_replacements=0, body_content_group_sha256=None, body_content_group_main_sha256=None,
                       body_content_group_version=None, body_content_group_ignored_consent=0,
                       body_content_group_status="unavailable")
         if collect_text:

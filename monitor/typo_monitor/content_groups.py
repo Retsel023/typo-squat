@@ -63,7 +63,8 @@ class _MainContent(PageText):
 
 
 def main_content_fingerprint(text, hostname, url, title, check_budget=None):
-    empty = {"body_content_group_sha256": None, "body_content_group_version": None,
+    empty = {"body_content_group_sha256": None, "body_content_group_main_sha256": None,
+             "body_content_group_version": None,
              "body_content_group_ignored_consent": 0, "body_content_group_status": "unavailable"}
     if not hostname or not url:
         return empty
@@ -104,7 +105,10 @@ def main_content_fingerprint(text, hostname, url, title, check_budget=None):
                 "links": sorted({normalize(value) for value in parser.links}),
                 "forms": sorted({normalize(value) for value in parser.forms})}
     digest = hashlib.sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
+    main_evidence = {key: value for key, value in evidence.items() if key != "title"}
+    main_digest = hashlib.sha256(json.dumps(main_evidence, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
     if check_budget:
         check_budget()
-    return {"body_content_group_sha256": digest, "body_content_group_version": CONTENT_GROUP_VERSION,
+    return {"body_content_group_sha256": digest, "body_content_group_main_sha256": main_digest,
+            "body_content_group_version": CONTENT_GROUP_VERSION,
             "body_content_group_ignored_consent": parser.consent_blocks, "body_content_group_status": "complete"}

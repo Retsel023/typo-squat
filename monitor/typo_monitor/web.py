@@ -99,6 +99,16 @@ def _has_capture_image(capture):
     return capture.get("scheme") in {"http", "https"}
 
 
+def _website_report_groups(captures, mode):
+    from .capture_changes import report_entries
+    entries = report_entries(captures, mode)
+    for entry in entries:
+        entry["has_image"] = _has_capture_image(entry["capture"])
+    # Keep all observations in the groups so domain lists and detail links do
+    # not change when an endpoint has no screenshot. Visibility is separate.
+    return entries, group_report_entries(entries)
+
+
 def _saved_capture(attempt):
     probe = attempt.get("preflight", {}) if isinstance(attempt, dict) else {}
     if probe.get("skip_reason") in {"title_rule", "duplicate_body"} or probe.get("report_exclusion") == "browser_title_rule":
@@ -691,10 +701,13 @@ def create_app(service):
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
         progress, outputs = live_data(run_id)
-        from .capture_changes import report_entries, website_check_diagnostics
+        from .capture_changes import website_check_diagnostics
         report_mode = run.get("capture_policy", {}).get("mode", "full")
         captures = service.store.list_run_captures(str(run_id))
-        website_groups = group_report_entries(report_entries(captures, report_mode))
+        entries, website_groups = _website_report_groups(captures, report_mode)
+        website_groups = [group for group in website_groups if group["has_image"]]
+        capture_diagnostics = sorted((entry for entry in entries if not entry["has_image"]),
+                                     key=lambda entry: (entry["capture"]["domain"], entry["capture"]["scheme"]))
         body_view = request.args.get("body_view", "all")
         if body_view not in {"all", "shared", "individual"}:
             abort(400, description="Choose all, shared or individual website bodies.")
@@ -711,6 +724,14 @@ def create_app(service):
         web_page = min(int(page_text), web_pages)
         web_total = len(website_entries)
         website_entries = website_entries[(web_page - 1) * 100:web_page * 100]
+        capture_page_text = request.args.get("capture_page", "1")
+        if (not capture_page_text.isascii() or not capture_page_text.isdigit()
+                or len(capture_page_text) > 8 or int(capture_page_text) < 1):
+            abort(400, description="Choose a valid screenshot diagnostics page.")
+        capture_total = len(capture_diagnostics)
+        capture_pages = max(1, (capture_total + 99) // 100)
+        capture_page = min(int(capture_page_text), capture_pages)
+        capture_diagnostics = capture_diagnostics[(capture_page - 1) * 100:capture_page * 100]
         handoff = review_selection(service.store, str(run_id)) if run["status"] in {"completed", "partial"} else None
         return render_template("run.html", project=project, run=run, page="run",
                                progress=progress, outputs=outputs, progress_stages=PROGRESS_STAGES,
@@ -718,6 +739,9 @@ def create_app(service):
                                website_entries=website_entries, report_mode=report_mode,
                                body_view=body_view, body_counts=body_counts, web_endpoint_total=web_endpoint_total,
                                web_diagnostics=web_diagnostics,
+                               capture_diagnostics=capture_diagnostics, capture_total=capture_total,
+                               capture_page=capture_page, capture_pages=capture_pages,
+                               capture_log_open="capture_page" in request.args,
                                web_page=web_page, web_pages=web_pages, web_total=web_total,
                                handoff_labels={"original": "Original websites", "failed": "Failed / unavailable captures",
                                                "title_filtered": "Excluded by title rule",
@@ -734,9 +758,8 @@ def create_app(service):
         if run is None:
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
-        from .capture_changes import report_entries
         mode = run.get("capture_policy", {}).get("mode", "full")
-        groups = group_report_entries(report_entries(service.store.list_run_captures(str(run_id)), mode))
+        _, groups = _website_report_groups(service.store.list_run_captures(str(run_id)), mode)
         group = next((item for item in groups if item["group_id"] == group_id), None)
         if group is None:
             # Keep each protocol's original content group and saved links accessible.

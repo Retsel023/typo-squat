@@ -338,6 +338,19 @@ with separate examples, content-match labels and links to each original group.
 Partial overlaps stay separate. Similarity normalization requires a new scan;
 screenshot scheduling, AI and DNS behavior are unchanged.
 
+An untitled page can also join matching main text and link/form structure if
+there is exactly one consistent nonempty title for that content in the report.
+Conflicting titles or failed title reads do not use this fallback. It needs the
+extra main-content fingerprint collected by new scans; title changes and
+exclusions keep their existing behavior.
+
+Cards and protocol panels without a current-run image are hidden. Their
+observations move into a collapsed **Screenshot diagnostics** log below the
+report, with errors and capture decisions, 100 entries per page. Groups with
+images retain all member observations and domain lists; existing reports and
+group links remain usable. History, capture scheduling and browser-skipped
+diagnostics are unchanged.
+
 See [text-only n8n review](../docs/N8N.md) and the [suggested AI prompt](../docs/AI_TEXT_PROMPT.md).
 
 With MassDNS, a domain enters this pipeline only after all its A, AAAA and
