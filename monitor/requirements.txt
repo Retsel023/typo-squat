@@ -4,3 +4,4 @@ waitress>=3.0,<4
 ail-typo-squatting==2.7.6
 Pillow>=12,<14
 PySocks==1.7.1
+reportlab>=4.4.9,<5

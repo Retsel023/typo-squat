@@ -283,8 +283,8 @@ class WebTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "text/csv")
         self.assertIn(project["id"], response.headers["Content-Disposition"])
         rows = list(csv.DictReader(io.StringIO(response.get_data(as_text=True))))
-        self.assertEqual(rows[0]["last_known_records"], "A 192.0.2.1")
-        self.assertTrue(rows[0]["last_error"].startswith("'"))
+        self.assertEqual(rows[0]["DNS now"], "A 192.0.2.1")
+        self.assertTrue(rows[0]["Notes"].startswith("'"))
 
     def test_default_view_only_shows_currently_resolving_typo_candidates(self):
         project = self.project()
@@ -343,14 +343,14 @@ class WebTests(unittest.TestCase):
         ]
         response = self.client.get(f"/projects/{project['id']}/export.csv?seed=example.com&hide_parked=1")
         rows = list(csv.DictReader(io.StringIO(response.get_data(as_text=True))))
-        self.assertEqual([row["domain"] for row in rows], ["examp1e.com"])
-        self.assertEqual(rows[0]["source_domains"], "example.com")
-        self.assertEqual(rows[0]["parking_status"], "not_detected")
+        self.assertEqual([row["Domain"] for row in rows], ["examp1e.com"])
+        self.assertIn("Generated from: example.com", rows[0]["Notes"])
+        self.assertNotIn("Likely parked", rows[0]["Notes"])
         all_inventory = self.client.get(f"/projects/{project['id']}/export.csv?status=&include_seeds=1")
         rows = list(csv.DictReader(io.StringIO(all_inventory.get_data(as_text=True))))
         self.assertEqual(len(rows), 3)
-        parked = next(row for row in rows if row["domain"] == "exxample.com")
-        self.assertEqual(parked["parking_evidence"], "NS pattern")
+        parked = next(row for row in rows if row["Domain"] == "exxample.com")
+        self.assertIn("NS pattern", parked["Notes"])
 
     def test_real_store_hides_retained_unknowns_and_filters_current_parking(self):
         with tempfile.TemporaryDirectory() as data_dir:
@@ -735,7 +735,7 @@ class WebTests(unittest.TestCase):
             self.assertNotIn(f'action="/projects/{other["id"]}/scan"', main)
             self.assertEqual(self.project_links(response), {f'/projects/{clazing["id"]}': True, f'/projects/{other["id"]}': False})
             exported = self.client.get(f"/projects/{clazing['id']}/export.csv")
-            domains = [row["domain"] for row in csv.DictReader(io.StringIO(exported.get_data(as_text=True)))]
+            domains = [row["Domain"] for row in csv.DictReader(io.StringIO(exported.get_data(as_text=True)))]
             self.assertEqual(domains, ["clazlng.example"])
             self.assertEqual(self.client.get(f"/projects/{clazing['id']}/candidates/other-typo.example").status_code, 404)
             other_run = self.client.get(f"/runs/{unrelated['id']}")

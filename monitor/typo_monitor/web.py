@@ -826,56 +826,79 @@ def create_app(service):
         progress, outputs = live_data(run_id)
         return {"run_id": str(run_id), "status": run["status"], "progress": progress, "outputs": outputs}
 
-    @app.get("/projects/<uuid:project_id>/export.csv")
-    def export_project(project_id):
-        project_or_404(project_id)
+    def inventory_export_data(project_id):
+        from .report_exports import inventory_records
+        project = project_or_404(project_id)
         filters = selected_filters()
-        output = io.StringIO(newline="")
-        writer = csv.writer(output)
-        from .report_exports import INVENTORY_DNS_FIELDS, INVENTORY_WEBSITE_FIELDS, inventory_website_values, record_text as csv_records
-        writer.writerow(["domain", "status", "latest_observation", "last_known_records", "first_seen", "last_seen", "last_checked", "missing_count", "last_error", "source_domains", "is_original", "parking_status", "parking_provider", "parking_evidence", *INVENTORY_DNS_FIELDS, *INVENTORY_WEBSITE_FIELDS])
-        for domain in service.store.export_domains(str(project_id), **filters):
-            record_text = "; ".join(f"{kind} {value}".strip() for kind, value in _records(domain.get("records")))
-            parking = domain.get("parking") or {}
-            evidence = parking.get("evidence", "")
-            if isinstance(evidence, list):
-                evidence = "; ".join(map(str, evidence))
-            event = domain.get("latest_dns_event") or {}
-            values = [domain.get("domain"), domain.get("status"), domain.get("latest_observation"), record_text,
-                      domain.get("first_seen"), domain.get("last_seen"), domain.get("last_checked"),
-                      domain.get("missing_count", 0), domain.get("last_error"),
-                      "; ".join(domain.get("sources", [])), domain.get("is_seed", False),
-                      parking.get("status", "unknown"), parking.get("provider"), evidence,
-                      domain.get("latest_scan_id"), event.get("kind"), csv_records(event.get("before", [])), csv_records(event.get("after", [])),
-                      *inventory_website_values(domain)]
-            writer.writerow([_csv_cell(value) for value in values])
-        return Response(output.getvalue(), mimetype="text/csv", headers={
-            "Content-Disposition": f'attachment; filename="domain-findings-{project_id}.csv"',
-        })
+        domains = service.store.export_domains(str(project_id), **filters)
+        records = list(inventory_records(domains))
+        labels = [DOMAIN_LABELS[filters["status"]]] if filters["status"] else ["All DNS statuses"]
+        labels.extend(INVENTORY_OPTIONS[key][filters[key]] for key in INVENTORY_OPTIONS if key in filters)
+        for key, label in (("query", "Search"), ("exclude_q", "Exclude"), ("seed", "Generated from")):
+            if filters.get(key):
+                labels.append(label + ": " + filters[key])
+        if filters["hide_parked"]:
+            labels.append("Likely parked hidden")
+        scan_id = next((domain.get("latest_scan_id") for domain in domains if domain.get("latest_scan_id")), None)
+        scan = service.store.get_run(scan_id) if scan_id else None
+        return project, records, "; ".join(labels), scan
 
-    @app.get("/runs/<uuid:run_id>/export.csv")
-    def export_report(run_id):
+    def report_export_data(run_id):
         snapshot = service.store.report_export_snapshot(str(run_id))
         if snapshot is None:
             abort(404, description="This saved scan report could not be found.")
         run = snapshot["run"]
         project = project_or_404(run["project_id"])
         if run["status"] not in {"completed", "partial"}:
-            abort(409, description="CSV reports are available after a scan completes.")
+            abort(409, description="Reports are available for export after a scan completes.")
         website_view = request.args.get("website_view", "priority")
         body_view = request.args.get("body_view", "all")
         if website_view not in {"priority", "all"} or body_view not in {"all", "shared", "individual"}:
             abort(400, description="Choose a valid website report view.")
-        from .report_exports import REPORT_FIELDS, report_rows
+        from .report_exports import report_records
+        records = report_records(project, run, snapshot["captures"], snapshot["observations"],
+                                 website_view=website_view, body_view=body_view)
+        scope = "Priority changes" if website_view == "priority" else "All captured pages"
+        scope += {"all": "", "shared": " - shared pages", "individual": " - other pages"}[body_view]
+        return project, records, scope, run, website_view + "-" + body_view
+
+    def csv_download(project, records, *, scan, filename):
+        from .report_exports import CLIENT_FIELDS, client_csv_rows
         output = io.StringIO(newline="")
-        writer = csv.DictWriter(output, fieldnames=REPORT_FIELDS)
+        writer = csv.DictWriter(output, fieldnames=CLIENT_FIELDS)
         writer.writeheader()
-        for row in report_rows(project, run, snapshot["captures"], snapshot["observations"],
-                               website_view=website_view, body_view=body_view):
+        for row in client_csv_rows(project, records, scan=scan):
             writer.writerow({key: _csv_cell(value) for key, value in row.items()})
         return Response(output.getvalue(), mimetype="text/csv", headers={
-            "Content-Disposition": f'attachment; filename="scan-report-{run_id}-{website_view}-{body_view}.csv"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
         })
+
+    def pdf_download(project, records, *, scope, scan, filename):
+        from .pdf_export import client_pdf
+        document = client_pdf(project, records, data_dir=getattr(service, "data_dir", None), scope=scope, scan=scan)
+        response = send_file(document, mimetype="application/pdf", download_name=filename, as_attachment=True, etag=False)
+        response.call_on_close(document.close)
+        return response
+
+    @app.get("/projects/<uuid:project_id>/export.csv")
+    def export_project(project_id):
+        project, records, _, scan = inventory_export_data(project_id)
+        return csv_download(project, records, scan=scan, filename=f"domain-findings-{project_id}.csv")
+
+    @app.get("/projects/<uuid:project_id>/export.pdf")
+    def export_project_pdf(project_id):
+        project, records, scope, scan = inventory_export_data(project_id)
+        return pdf_download(project, records, scope=scope, scan=scan, filename=f"domain-findings-{project_id}.pdf")
+
+    @app.get("/runs/<uuid:run_id>/export.csv")
+    def export_report(run_id):
+        project, records, _, run, view = report_export_data(run_id)
+        return csv_download(project, records, scan=run, filename=f"scan-report-{run_id}-{view}.csv")
+
+    @app.get("/runs/<uuid:run_id>/export.pdf")
+    def export_report_pdf(run_id):
+        project, records, scope, run, view = report_export_data(run_id)
+        return pdf_download(project, records, scope=scope, scan=run, filename=f"scan-report-{run_id}-{view}.pdf")
 
     for error_code in (400, 404, 409, 413):
         def handle_error(error):

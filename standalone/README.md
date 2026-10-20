@@ -461,15 +461,25 @@ findings still publish together at the end. Stop scan discards unfinished work.
 The dnspython alternative remains DNS-first. Live pipeline progress displays
 separate DNS, web-check and capture counts.
 
-## Filter findings and export CSV
+## Filter findings and export reports
 
 The project findings gallery/table has quick filters for **New additions**,
 **Screenshots only**, **Website changes**, **DNS changes** and **DNS only**.
 Combine these with domain/title search, excluded text, screenshot state,
 HTTP response/status, protocol, title exclusions, parking signals, DNS record
-type and sorting. Counts, source groups, pagination and **Export filtered CSV**
-use the same complete filtered view. CSV includes HTTP/HTTPS titles/statuses and
-saved screenshot availability/dates alongside DNS before/after and source data.
+type and sorting. Counts, source groups, pagination and exports use the same
+complete filtered view across every page.
+
+**PDF with screenshots** creates a self-contained client report with saved images
+embedded. Each domain has one section: HTTP followed by HTTPS in the same column,
+with titles, response status and concise DNS notes. Findings without screenshots
+use compact notes; missing files are labelled explicitly. Inventory PDFs follow
+the gallery's dated previous-image fallback.
+
+**CSV data** uses one row per domain with readable headings. HTTP and HTTPS share
+the Websites cell, and their capture dates share the Screenshots cell, always HTTP
+first. DNS before/after, findings and source notes have separate columns. CSV is
+data-only; choose PDF when sharing screenshots.
 
 Change filters use the latest nondeleted completed scan, including completed
 scans with gaps; its date appears below the filters. New additions mean first
@@ -480,14 +490,13 @@ filters use each protocol's latest saved attempt; screenshot availability includ
 the gallery's older-image fallback. Title exclusions use recorded matches and
 currently enabled global/project phrases without changing old scan decisions.
 
-Each completed saved report and scan-history entry also offers **Export report
-CSV**. It exports all pages in the selected priority/all and body view, plus the
-report's screenshot-unavailable, context and DNS/network side notes. A section
-column and scan-summary row distinguish records. Saved page text/diffs and
-comparison details have separate columns. Titles, statuses, DNS values and
-screenshot flags are the saved report's observations; older reports never borrow
-new DNS values or screenshots. Exporting does not run tools or AI. CSV escapes
-spreadsheet formulas, and deleted/unfinished reports are unavailable.
+Each completed saved report and scan-history entry offers both formats. They
+export all pages in the selected priority/all and body view, plus the report's
+screenshot-unavailable, context and DNS/network side notes. Titles, statuses, DNS
+values and screenshots are that saved report's observations; older reports never
+borrow new DNS values or images. Exporting does not run scans or AI. CSV escapes
+spreadsheet formulas, and deleted/unfinished reports are unavailable. The updated
+dependency files include ReportLab for PDF generation.
 
 ## Browser performance
 

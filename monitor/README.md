@@ -783,7 +783,7 @@ content check or a claim that a domain is safe. See [parking rules](../docs/PARK
 and [discovery options](../docs/DISCOVERY.md).
 
 Project findings support combined filters before pagination, source counts and
-CSV export. Search includes domain names and saved HTML/browser titles; **Exclude
+exports. Search includes domain names and saved HTML/browser titles; **Exclude
 domain or title text** removes a literal phrase. Quick links open new additions,
 saved screenshots, priority website changes, DNS changes or DNS-only changes.
 Further filters cover title/form/layout changes, minor context updates, unchanged
@@ -803,18 +803,27 @@ the gallery's previous-image fallback and exclusions. Title-exclusion filtering
 uses recorded matches and currently enabled global/project title phrases; it
 does not rewrite saved scan decisions. Filters do not change the scan inventory.
 
-**Export filtered CSV**, beside the findings filters, exports every matching
-domain across all pages in the selected order. It includes DNS/provenance and
-parking data, DNS before/after values, HTTP/HTTPS titles/statuses, saved screenshot
-availability/dates and website change labels. **Export report CSV** is available on completed saved scans
-and in scan history. It exports all pages of the selected priority/all and body
-view, plus that report's screenshot-unavailable log, context and DNS/network side
-notes. A section column separates these records, with a scan-summary row even
-when nothing matches. DNS values come from that scan's observation snapshot,
-not newer project state. Saved page text/diffs and comparison details remain
-available as separate columns. Report screenshot flags refer only to that scan's
-own images. CSV cells escape spreadsheet formulas; images and AI calls are not part
-of exporting. Deleted and unfinished reports cannot be exported.
+**PDF with screenshots**, beside the findings filters, exports every matching
+domain across all pages. Each domain has one section with labelled HTTP then
+HTTPS screenshots stacked in the same column, titles, response status and concise
+DNS notes. Images are embedded in the PDF, so clients can open it without access
+to this server. Findings without screenshots use compact notes rather than empty
+image cards. Missing image files are labelled explicitly. Inventory exports can
+include clearly dated previous captures, following the gallery's image fallback.
+
+Completed saved scans and scan history offer the same PDF option. Report exports
+include all pages of the selected priority/all and body view, plus the report's
+screenshot-unavailable, saved-context and DNS/network notes. DNS values and images
+come from that scan's saved observations; older reports never borrow newer
+project data. Only the report's own screenshots are embedded.
+
+**CSV data** is a data-only alternative with readable headings and one row per
+domain. HTTP and HTTPS titles/statuses share the Websites cell, and capture dates
+share the Screenshots cell, always HTTP first. DNS before/after, findings, source
+domains and other notes occupy separate columns. CSV cannot embed images; use PDF
+to share screenshots. CSV cells escape spreadsheet formulas. Exporting reads saved
+data without running scans or AI. Deleted and unfinished reports cannot be
+exported. PDF generation uses ReportLab, included in the updated dependency files.
 
 The default gallery shows dated HTTP/HTTPS captures. Candidate review includes
 full images, previous/current comparisons, original-source reference captures,

@@ -14,6 +14,7 @@ MarkupSafe==3.0.4
 pillow==12.3.0
 PyYAML==6.0.3
 PySocks==1.7.1
+reportlab==4.4.9
 requests==2.34.2
 requests-file==3.0.1
 retrie==0.2.4
