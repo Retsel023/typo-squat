@@ -46,6 +46,51 @@ form/link and endpoint observations only. A periodic screenshot of unchanged
 content does not enter a change-only report; it remains in inventory/history for
 manual review. Full reports retain all eligible current-run captures.
 
+### Comparison history
+
+DNS already compares against accumulated per-project state: missed discovery
+does not remove saved names, uncertain DNS checks retain the last known records,
+and explicit negative checks require repeated confirmation. The main history
+column counts **Website changes**; DNS event totals appear as secondary notes.
+DNS event details live in a collapsed **DNS side notes** section. A different
+received address set is a DNS event, not proof of changed website content.
+Ordering, duplicate DNS answers and TTL differences are already normalized away.
+
+Website comparison now uses accepted history per project, domain and protocol,
+rather than only the immediately preceding accepted scan. It independently
+selects the most recent reliable title, complete text with the current
+extraction version, definite connection result, HTTP endpoint and successful
+image. An absent endpoint or incomplete/uncertain read does not erase the
+older good evidence. A completed empty title is a known missing title; it is
+different from a failed title read. A title-only scan can update the title
+without replacing the most recent complete page-text check.
+
+The original observations stay separate. **Capture decision** links to the
+source report and check time for each comparison field; the log records those
+references too. Unchanged and uncertain checks remain recorded so their dates
+and failures can be audited. Current missing fields are never presented as if
+they were freshly read from an older scan.
+
+Comparisons use the latest reliable value, not any matching value ever seen:
+`A → uncertain check → A` can remain unchanged, while `A → B → A` remains a
+change. Only new/changed text, titles and form/link observations enter the
+changes-only website report. HTTP destinations, status codes, TLS and connection
+availability have separate **Website network side notes**, with bounded samples
+and candidate-history links. A network-only difference cannot create a website
+change card, including when displaying older saved observations in this mode.
+Full reports still show all eligible current-run captures.
+
+Dynamic readable text or form/link destinations can still differ even
+when a title and screenshot look unchanged; this feature does not discard
+those differences. Existing screenshot-file, endpoint, proxy-route and refresh
+checks still govern whether an unchanged page can skip Gowitness.
+
+The change uses the existing SQLite history and takes effect on future scans
+after rebuilding; it does not rewrite stored historical observations. Completed and partial
+accepted runs are eligible, with per-field quality checks; failed/cancelled
+runs are excluded. Explicit report deletion removes its website observations
+and images from this history; accepted DNS state is retained independently.
+
 Failed connection/TLS preflight checks never enter Gowitness. They are omitted
 from website review cards in both report modes and summarized in a collapsed
 **Website-check diagnostics** section instead, with separate no-response and

@@ -701,7 +701,7 @@ def create_app(service):
             abort(404, description="This scan could not be found.")
         project = project_or_404(run["project_id"])
         progress, outputs = live_data(run_id)
-        from .capture_changes import website_check_diagnostics
+        from .capture_changes import website_check_diagnostics, website_network_notes
         report_mode = run.get("capture_policy", {}).get("mode", "full")
         captures = service.store.list_run_captures(str(run_id))
         entries, website_groups = _website_report_groups(captures, report_mode)
@@ -717,6 +717,7 @@ def create_app(service):
                            or group["shared"] == (body_view == "shared")]
         web_endpoint_total = sum(group["endpoint_count"] for group in website_entries)
         web_diagnostics = website_check_diagnostics(captures)
+        network_notes = website_network_notes(captures)
         page_text = request.args.get("web_page", "1")
         if not page_text.isascii() or not page_text.isdigit() or len(page_text) > 8 or int(page_text) < 1:
             abort(400, description="Choose a valid website report page.")
@@ -738,7 +739,7 @@ def create_app(service):
                                demo="demo" in run.get("source_status", {}), handoff=handoff,
                                website_entries=website_entries, report_mode=report_mode,
                                body_view=body_view, body_counts=body_counts, web_endpoint_total=web_endpoint_total,
-                               web_diagnostics=web_diagnostics,
+                               web_diagnostics=web_diagnostics, network_notes=network_notes,
                                capture_diagnostics=capture_diagnostics, capture_total=capture_total,
                                capture_page=capture_page, capture_pages=capture_pages,
                                capture_log_open="capture_page" in request.args,

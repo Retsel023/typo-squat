@@ -922,6 +922,9 @@ class Store:
                 counts["screenshots_body_duplicates"] = sum(attempt["preflight"].get("skip_reason") == "duplicate_body" for _, attempt in attempts)
                 counts["screenshots_text_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_content" for _, attempt in attempts)
                 counts["screenshots_title_unchanged"] = sum(attempt["preflight"].get("skip_reason") == "unchanged_title" for _, attempt in attempts)
+                from .capture_changes import report_entries
+                counts["website_changes"] = len(report_entries(
+                    [dict(attempt, domain=domain) for domain, attempt in attempts], "changes"))
                 for capture_status in ("captured", "failed", "unavailable", "skipped"):
                     counts["screenshots_" + capture_status] = sum(attempt["status"] == capture_status for _, attempt in attempts)
                 for image_change in ("first_capture", "changed", "unchanged", "uncertain"):
@@ -987,7 +990,28 @@ class Store:
             parameters.append(offset)
         with self._connection() as db:
             self._require_project(db, project_id)
-            return [self._run(row) for row in db.execute(query, parameters)]
+            results = [self._run(row) for row in db.execute(query, parameters)]
+            # Older run summaries only stored DNS-event counts. Derive their
+            # content-change counts in batches without rewriting saved reports.
+            from .capture_changes import CONTENT_CHANGE_KINDS
+            kinds = sorted(CONTENT_CHANGE_KINDS)
+            pending = [run for run in results if run["status"] in {"completed", "partial"}
+                       and "website_changes" not in run["counts"]]
+            for batch_start in range(0, len(pending), 800):
+                batch = pending[batch_start:batch_start + 800]
+                ids = [run["id"] for run in batch]
+                marks, kind_marks = ",".join("?" for _ in ids), ",".join("?" for _ in kinds)
+                counts = {row["run_id"]: row["total"] for row in db.execute(f"""SELECT run_id,COUNT(*) AS total
+                    FROM captures WHERE project_id=? AND run_id IN ({marks})
+                    AND json_extract(preflight_json,'$.status')='http_response'
+                    AND json_extract(preflight_json,'$.web_change') IN ({kind_marks})
+                    AND coalesce(json_extract(preflight_json,'$.skip_reason'),'')
+                        NOT IN ('title_rule','duplicate_body','unchanged_title','unchanged_content')
+                    AND coalesce(json_extract(preflight_json,'$.report_exclusion'),'')<>'browser_title_rule'
+                    GROUP BY run_id""", (project_id, *ids, *kinds))}
+                for run in batch:
+                    run["counts"]["website_changes"] = counts.get(run["id"], 0)
+            return results
 
     def get_domains(self, project_id):
         return self.export_domains(project_id)
@@ -1046,24 +1070,57 @@ class Store:
                 "SELECT * FROM captures WHERE run_id=? ORDER BY domain,scheme", (run_id,))]
 
     def capture_baselines(self, project_id):
-        """Bulk metadata only: previous accepted checks and latest real images."""
+        """Latest trustworthy evidence per endpoint, across accepted history.
+
+        Select each evidence kind independently: a timeout, absent endpoint or
+        title-only scan must not replace the last complete page-text check.
+        The selected rows remain intact; no synthetic historical page is made.
+        """
+        from .page_text import EXTRACTION_VERSION
+        responsive = "json_extract(c.preflight_json,'$.status')='http_response'"
+        known_title = responsive + """ AND json_extract(c.preflight_json,'$.title_http_status') BETWEEN 200 AND 299
+            AND ((json_extract(c.preflight_json,'$.title_status')='found'
+                  AND length(json_extract(c.preflight_json,'$.title'))>0)
+                 OR (json_extract(c.preflight_json,'$.title_status')='missing'
+                     AND coalesce(length(json_extract(c.preflight_json,'$.title')),0)=0))"""
+        selectors = (
+            ("previous", "1", ()),
+            ("connection", "json_extract(c.preflight_json,'$.status') IN ('http_response','no_http_response')", ()),
+            ("endpoint", responsive, ()),
+            ("title", known_title, ()),
+            ("text", known_title + """ AND json_extract(c.preflight_json,'$.content_status')='complete'
+                AND length(json_extract(c.preflight_json,'$.page_text'))>0
+                AND length(json_extract(c.preflight_json,'$.text_sha256'))=64
+                AND length(json_extract(c.preflight_json,'$.content_sha256'))=64
+                AND json_extract(c.preflight_json,'$.content_version')=?""", (EXTRACTION_VERSION,)),
+            ("image", "c.status='captured'", ()),
+        )
         with self._connection() as db:
             db.execute("BEGIN")
-            previous_run = db.execute("""SELECT id FROM runs WHERE project_id=?
-                AND status IN ('completed','partial') ORDER BY started_at DESC,rowid DESC LIMIT 1""", (project_id,)).fetchone()
-            baselines = {}
-            if previous_run:
-                for row in db.execute("SELECT * FROM captures WHERE run_id=?", (previous_run["id"],)):
-                    baselines.setdefault((row["domain"], row["scheme"]), {})["previous"] = self._capture(row)
-            for row in db.execute("""SELECT * FROM (SELECT c.*,r.proxy_status_json AS routes_json,
-                ROW_NUMBER() OVER(PARTITION BY c.domain,c.scheme ORDER BY c.captured_at DESC,c.rowid DESC) AS image_rank
-                FROM captures c JOIN runs r ON r.id=c.run_id WHERE c.project_id=? AND c.status='captured')
-                WHERE image_rank=1""", (project_id,)):
-                baseline = baselines.setdefault((row["domain"], row["scheme"]), {})
-                image = self._capture(row)
-                image.pop("image_rank", None)
-                baseline["route"] = json.loads(image.pop("routes_json")).get("capture", {})
-                baseline["image"] = image
+            baselines, decoded = {}, {}
+            for kind, condition, parameters in selectors:
+                # Rank identifiers only; load full text/JSON for selected rows,
+                # rather than reading every historical body into Python.
+                rows = db.execute(f"""WITH ranked AS (
+                    SELECT c.rowid AS capture_rowid,
+                        ROW_NUMBER() OVER(PARTITION BY c.domain,c.scheme
+                            ORDER BY r.started_at DESC,r.rowid DESC,c.rowid DESC) AS evidence_rank
+                    FROM captures c JOIN runs r ON r.id=c.run_id
+                    WHERE c.project_id=? AND r.status IN ('completed','partial') AND ({condition})
+                ) SELECT c.*,r.proxy_status_json AS routes_json FROM ranked q
+                    JOIN captures c ON c.rowid=q.capture_rowid JOIN runs r ON r.id=c.run_id
+                    WHERE q.evidence_rank=1""", (project_id, *parameters))
+                for row in rows:
+                    baseline = baselines.setdefault((row["domain"], row["scheme"]), {})
+                    identity = (row["run_id"], row["domain"], row["scheme"])
+                    if identity not in decoded:
+                        evidence = self._capture(row)
+                        route = json.loads(evidence.pop("routes_json")).get("capture", {})
+                        decoded[identity] = evidence, route
+                    evidence, route = decoded[identity]
+                    baseline[kind] = evidence
+                    if kind == "image":
+                        baseline["route"] = route
             return baselines
 
     def latest_successful_capture(self, project_id, domain, scheme):

@@ -273,6 +273,25 @@ expandable text diffs and this run's screenshots. It does not repeat old images.
 The inventory and older reports retain the complete history. DNS changes remain
 separate; changes do not prove a purchase or maliciousness.
 
+Each new scan can use the latest reliable website observations across accepted
+history for that client, domain and protocol. Titles, complete page text and
+connection/HTTP results are selected separately, so an incomplete run or a
+title-only scan cannot erase an older complete text check. **Capture decision**
+links to each source scan and timestamp. `A → failed read → A` can stay
+unchanged; `A → B → A` still reports the return from B to A. Only comparable
+text extraction versions are used. Earlier reports are not rewritten, and
+explicitly deleted report evidence is no longer available to comparisons.
+
+The scan-history **Website changes** column counts new/changed website
+observations; DNS totals appear underneath as side notes. DNS state and discovery
+inventory already accumulate across runs. Changed IP answer sets remain in a
+collapsed **DNS side notes** section. HTTP destination/status, TLS and connection
+changes have their own collapsed network notes and cannot by themselves add
+a website-change card. Text/title/form/link differences still count; a familiar
+screenshot does not establish that those fetched observations matched. Older
+network-only entries also stay out of changes-only cards; stored evidence and
+full-report views are retained.
+
 **Full capture / report** captures all eligible endpoints, respecting title
 exclusions. The default periodic recapture age is 30 days (0 disables, up to 365).
 Static text cannot reveal purely visual or JavaScript-only changes, so full or

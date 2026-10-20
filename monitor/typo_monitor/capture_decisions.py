@@ -71,6 +71,9 @@ class CaptureDecisionLog:
                 "website_status": probe.get("status"),
                 "final_html_url": probe.get("title_url"),
                 "reason": probe.get("capture_reason"),
+                "website_content_change": probe.get("web_change"),
+                "network_notes": {key: probe[key] for key in ("endpoint_change", "connection_change") if probe.get(key)},
+                "comparison_baselines": probe.get("comparison_baselines"),
                 "website_error": probe.get("error")}
 
     def before(self, row, selected):

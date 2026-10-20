@@ -51,8 +51,14 @@ def compact_diff(previous, current):
 
 
 def _complete(row):
-    return (row.get("status") == "http_response" and row.get("title_status") == "found"
-            and bool(row.get("title")) and 200 <= (row.get("title_http_status") or 0) < 300)
+    return (row.get("status") == "http_response" and 200 <= (row.get("title_http_status") or 0) < 300
+            and (row.get("title_status") == "found" and bool(row.get("title"))
+                 or row.get("title_status") == "missing" and not row.get("title")))
+
+
+def _endpoint_complete(row):
+    return (row.get("status") == "http_response" and row.get("title_status") in {"found", "missing"}
+            and row.get("title_http_status") is not None and bool(row.get("title_url")))
 
 
 def _same_endpoint(current, previous):
@@ -68,48 +74,79 @@ def _endpoint_changed(current, previous):
 
 
 def compare(capture, domain, row, diagnostic):
-    """Annotate against the previous accepted run; never guess at missing data.
+    """Compare each field to its latest trustworthy accepted observation.
 
     A skip additionally needs a successful, matching image baseline on disk.
     The old image is neither copied into this run nor attached to its report.
     """
     baseline = getattr(capture, "title_baselines", {}).get((domain, row["scheme"]), {})
-    old, image = baseline.get("previous"), baseline.get("image")
-    previous = (old or {}).get("preflight", {})
     policy = getattr(capture, "capture_policy", {})
     text_mode = policy.get("comparison", "title") == "text"
-    diagnostic.update(web_change="unknown", comparison_mode="text" if text_mode else "title",
+    current_comparable = text_complete(diagnostic) if text_mode else _complete(diagnostic)
+    latest, image = baseline.get("previous"), baseline.get("image")
+    latest_probe = (latest or {}).get("preflight", {})
+    title_old = baseline.get("title") or (latest if _complete(latest_probe) else None)
+    text_old = baseline.get("text") or (latest if text_complete(latest_probe)
+        and latest_probe.get("content_version") == diagnostic.get("content_version") else None)
+    old = (text_old if text_mode else title_old) or latest
+    previous = (old or {}).get("preflight", {})
+    title_previous = (title_old or {}).get("preflight", {})
+    connection_old = baseline.get("connection") or (latest if latest_probe.get("status")
+        in {"http_response", "no_http_response"} else None)
+    connection_previous = (connection_old or {}).get("preflight", {})
+    endpoint_old = baseline.get("endpoint") or (latest if latest_probe.get("status") == "http_response" else None)
+    endpoint_previous = (endpoint_old or {}).get("preflight", {})
+    final_endpoint_old = endpoint_old if _endpoint_complete(endpoint_previous) else title_old
+    final_endpoint_previous = (final_endpoint_old or {}).get("preflight", {})
+
+    def reference(evidence):
+        return {"run_id": evidence.get("run_id"),
+                "checked_at": evidence.get("preflight", {}).get("checked_at") or evidence.get("captured_at")}
+
+    diagnostic.update(web_change="unknown", connection_change=None, comparison_scope="content", comparison_mode="text" if text_mode else "title",
                       previous_title=previous.get("title"),
                       previous_title_status=previous.get("title_status"),
                       previous_content_status=previous.get("content_status"),
-                      previous_duplicate_body_of=previous.get("duplicate_body_of"),
+                      previous_duplicate_body_of=(latest or {}).get("preflight", {}).get("duplicate_body_of"),
                       previous_run_id=(old or {}).get("run_id"),
-                      previous_endpoint={key: previous.get(key) for key in
+                      previous_known_title=title_previous.get("title"),
+                      previous_known_title_status=title_previous.get("title_status"),
+                      previous_endpoint={key: final_endpoint_previous.get(key) for key in
                                          ("title_url", "http_status", "title_http_status", "tls_verified")})
+    diagnostic["comparison_baselines"] = {kind: reference(evidence) for kind, evidence in
+        (("title", title_old), ("text", text_old if text_mode else None),
+         ("connection", connection_old), ("endpoint", final_endpoint_old)) if evidence}
     diagnostic["previous_content_sha256"] = previous.get("content_sha256")
     if not previous:
-        if diagnostic["status"] == "http_response":
+        if current_comparable:
             diagnostic["web_change"] = "first_observation"
-    elif {diagnostic["status"], previous.get("status")} == {"http_response", "no_http_response"}:
-        diagnostic["web_change"] = ("became_available" if diagnostic["status"] == "http_response"
-                                    else "became_unavailable")
     elif text_mode and text_complete(diagnostic) and text_complete(previous) and diagnostic.get("content_version") == previous.get("content_version"):
-        diagnostic["web_change"] = ("title_changed" if diagnostic.get("title") != previous.get("title") else
-            "endpoint_changed" if not _same_endpoint(diagnostic, previous) else
-            "text_changed" if diagnostic.get("text_sha256") != previous.get("text_sha256") else
+        diagnostic["web_change"] = ("text_changed" if diagnostic.get("text_sha256") != previous.get("text_sha256") else
             "structure_changed" if diagnostic.get("content_sha256") != previous.get("content_sha256") else "unchanged")
         if diagnostic.get("text_sha256") != previous.get("text_sha256"):
             diagnostic["text_diff"] = compact_diff(previous["page_text"], diagnostic["page_text"])
     elif text_mode and text_complete(diagnostic):
         diagnostic["web_change"] = "first_text_observation"
-    elif not text_mode and _complete(diagnostic) and _complete(previous):
-        diagnostic["web_change"] = ("title_changed" if diagnostic["title"] != previous["title"] else
-                                    "endpoint_changed" if not _same_endpoint(diagnostic, previous) else "unchanged")
-    elif (diagnostic["status"] == previous.get("status") == "http_response"
-          and _endpoint_changed(diagnostic, previous)):
-        diagnostic["web_change"] = "endpoint_changed"
-    elif not text_mode and _complete(diagnostic) and not _complete(previous):
+    elif not text_mode and _complete(diagnostic) and _complete(title_previous):
+        diagnostic["web_change"] = "unchanged"
+    elif not text_mode and _complete(diagnostic) and not _complete(title_previous):
         diagnostic["web_change"] = "first_title_observation"
+
+    # Compare title/endpoint evidence independently of the text baseline: a
+    # later title-only scan can update a title without erasing older full text.
+    endpoint_changed = (diagnostic["status"] == endpoint_previous.get("status") == "http_response"
+        and diagnostic.get("http_status") is not None and endpoint_previous.get("http_status") is not None
+        and diagnostic["http_status"] != endpoint_previous["http_status"])
+    if (_endpoint_complete(diagnostic) and _endpoint_complete(final_endpoint_previous)
+            and _endpoint_changed(diagnostic, final_endpoint_previous)):
+        endpoint_changed = True
+    diagnostic["endpoint_change"] = "endpoint_changed" if endpoint_changed else None
+    if (_complete(diagnostic) and _complete(title_previous)
+            and diagnostic.get("title") != title_previous.get("title")):
+        diagnostic["web_change"] = "title_changed"
+    if {diagnostic["status"], connection_previous.get("status")} == {"http_response", "no_http_response"}:
+        diagnostic["connection_change"] = ("became_available" if diagnostic["status"] == "http_response"
+                                           else "became_unavailable")
 
     def recapture(reason):
         diagnostic.update(capture_decision="capture", capture_reason=reason)
@@ -123,7 +160,7 @@ def compare(capture, domain, row, diagnostic):
     if diagnostic["web_change"] != "unchanged":
         if diagnostic["web_change"] != "unknown":
             return recapture(diagnostic["web_change"])
-        if not (text_complete(diagnostic) if text_mode else _complete(diagnostic)):
+        if not current_comparable:
             return recapture("current_text_uncertain" if text_mode else "current_title_uncertain")
         return recapture("previous_text_unavailable" if text_mode else "previous_title_unavailable")
     # Fresh comparable observations and a matching successful image are enough.
@@ -168,14 +205,17 @@ CHANGE_LABELS = {"first_observation": "First website observation", "first_title_
                  "endpoint_changed": "HTTP endpoint changed", "became_available": "Website now responds",
                  "became_unavailable": "Website stopped responding"}
 
+CONTENT_CHANGE_KINDS = frozenset({"first_observation", "first_title_observation", "first_text_observation",
+                                  "text_changed", "structure_changed", "title_changed"})
+
 CAPTURE_REASONS = {
     **CHANGE_LABELS,
     "full_report": "Full capture / report was requested; unchanged pages are captured too.",
     "periodic_refresh": "The saved screenshot reached the configured refresh age.",
     "current_title_uncertain": "The current static title check was incomplete or was not a successful 2xx response.",
     "current_text_uncertain": "The current static text check was incomplete or was not a successful 2xx response.",
-    "previous_title_unavailable": "There was no comparable successful static title check in the previous accepted run.",
-    "previous_text_unavailable": "There was no comparable complete text check in the previous accepted run.",
+    "previous_title_unavailable": "No comparable successful static title check was available in accepted history.",
+    "previous_text_unavailable": "No comparable complete text check was available in accepted history.",
     "image_baseline_missing": "No successful saved screenshot baseline was available for this protocol.",
     "image_baseline_mismatch": "The saved screenshot's static title/content or HTTP endpoint did not match the fresh check.",
     "image_baseline_unavailable": "The saved screenshot file or its date/path metadata was unavailable or invalid.",
@@ -203,8 +243,29 @@ def website_check_diagnostics(captures):
         if len(samples) < 20:
             samples.append({"domain": capture["domain"], "scheme": capture["scheme"],
                             "status": status, "error": probe.get("error") or capture.get("error"),
-                            "became_unavailable": probe.get("web_change") == "became_unavailable"})
+                            "became_unavailable": probe.get("connection_change", probe.get("web_change")) == "became_unavailable"})
     return {"counts": counts, "total": sum(counts.values()), "samples": samples}
+
+
+def website_network_notes(captures):
+    """Network-only differences are side notes, not website content changes."""
+    total, samples = 0, []
+    for capture in captures:
+        probe = capture.get("preflight", {})
+        kinds = [probe[key] for key in ("endpoint_change", "connection_change") if probe.get(key)]
+        if not kinds and probe.get("web_change") in {"endpoint_changed", "became_available", "became_unavailable"}:
+            kinds = [probe["web_change"]]
+        if not kinds:
+            continue
+        total += 1
+        if len(samples) < 20:
+            samples.append({"domain": capture["domain"], "scheme": capture["scheme"],
+                            "kinds": [CHANGE_LABELS.get(kind, kind) for kind in kinds],
+                            "before": probe.get("previous_endpoint", {}),
+                            "after": {key: probe.get(key) for key in
+                                      ("title_url", "http_status", "title_http_status", "tls_verified")},
+                            "error": probe.get("error")})
+    return {"total": total, "samples": samples}
 
 
 def report_entries(captures, mode="changes"):
@@ -224,7 +285,7 @@ def report_entries(captures, mode="changes"):
         change = probe.get("web_change")
         label = CHANGE_LABELS.get(change)
         capture_reason = probe.get("capture_reason")
-        if mode == "changes" and not label:
+        if mode == "changes" and change not in CONTENT_CHANGE_KINDS:
             continue
         companion = by_key.get((capture["domain"], probe.get("body_shared_with")))
         if companion and companion.get("preflight", {}).get("duplicate_body_of") != capture["scheme"]:
@@ -234,6 +295,6 @@ def report_entries(captures, mode="changes"):
                         "protocol_observations": [capture, companion] if companion else [],
                         "capture_reason": CAPTURE_REASONS.get(capture_reason,
                             "This older scan did not record why the browser was requested."),
-                        "before_title": probe.get("previous_title"), "after_title": probe.get("title"),
+                        "before_title": probe.get("previous_known_title", probe.get("previous_title")), "after_title": probe.get("title"),
                         "previous_run_id": probe.get("previous_run_id")})
     return entries
