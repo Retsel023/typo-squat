@@ -212,6 +212,16 @@ is queued and apply to both manual and scheduled scans. Each run displays its
 saved rules from both scopes; later edits do not rewrite past reports or alter
 queued/running scans. Title comparisons continue when both exclusion lists are off.
 
+**Live output → capture-decisions.log** records the fetched title/filter and
+reason for selecting or skipping each endpoint before Gowitness. While the
+browser runs it also records its reported title and screenshot result, marked
+as awaiting artifact validation. Final records distinguish verified saved images
+from title exclusions applied after capture. `have-screenshot=true` in
+`gowitness.log` means Gowitness reports taking an image; it does not mean that
+the report included it. The new log is bounded recent telemetry (2 MiB, with
+older entries trimmed); accepted check/capture history remains separate. It
+does not change filtering or prevent a browser-only title's first capture.
+
 ### Change-only screenshots and reports
 
 Routine scans default to **Changes only**. Every run refreshes DNS and

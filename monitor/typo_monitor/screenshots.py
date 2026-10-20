@@ -15,6 +15,7 @@ from .domains import normalize_domain
 from .website_probe import WebsiteProbe, BROWSER_USER_AGENT
 from .title_filter import MAX_TITLE_CHARS, TITLE_STATUSES, filter_decision
 from .page_text import MAX_BODY_BYTES, MAX_TEXT_CHARS, TEXT_STATUSES
+from .capture_decisions import CaptureDecisionLog
 
 
 SUPPORTED_VERSION = "3.2.2"
@@ -306,10 +307,11 @@ class _JsonlProgress:
     _MAX_LINE = 1024 * 1024
     _MAX_TICK_BYTES = 4 * 1024 * 1024
 
-    def __init__(self, path, workdir, requested, callback, metrics):
+    def __init__(self, path, workdir, requested, callback, metrics, on_result=None):
         self.path, self.workdir = path, workdir
         self.requested, self.callback = set(requested), callback
         self.metrics = dict(metrics)
+        self.on_result = on_result
         self.offset, self.identity = 0, None
         self.pending = bytearray()
         self.discarding = False
@@ -325,9 +327,16 @@ class _JsonlProgress:
         url = record["url"]
         if url not in self.requested:
             return
+        first = url not in self.seen
         self.seen.add(url)
         if record.get("failed") is True:
             self.failed.add(url)
+        if first and callable(self.on_result):
+            try:
+                self.on_result(record)
+            except Exception:
+                # Optional diagnostics cannot invalidate browser results.
+                pass
 
     def _consume(self, chunk):
         pieces = chunk.split(b"\n")
@@ -473,6 +482,7 @@ class GowitnessCapture:
         requested = {row["url"]: row for rows in results.values() for row in rows}
         detected_version = None
         callback = getattr(self, "progress_callback", None)
+        decisions = None
         if not requested:
             stage = self._stage(results, "No currently resolving candidates to capture.")
             return results, {**stage, "status": "skipped"}
@@ -480,6 +490,8 @@ class GowitnessCapture:
         def unavailable(detail):
             for row in requested.values():
                 row.update(status="unavailable", error=detail)
+            if decisions is not None:
+                decisions.verified(requested)
             stage = self._stage(results, detail, failed=True, version=detected_version)
             _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
             return results, stage
@@ -498,6 +510,7 @@ class GowitnessCapture:
             preflight_file = workdir / "preflight.json"
             if preflight_file.exists() or preflight_file.is_symlink():
                 raise ValueError("Existing website preflight cannot be reused for a new capture.")
+            decisions = CaptureDecisionLog(workdir, self)
             probe = self.probe or WebsiteProbe(timeout=self.probe_timeout, workers=self.probe_workers)
             probe.cancel_event = self.cancel_event
             probe.run_id = getattr(self, "run_id", "manual")
@@ -519,6 +532,8 @@ class GowitnessCapture:
                 eligible[url] = _apply_preflight(self, row, diagnostic, url.split("://", 1)[1].rsplit(":", 1)[0])
             for rows in results.values():
                 _deduplicate_protocols(self, rows, eligible)
+                for row in rows:
+                    decisions.before(row, eligible[row["url"]])
             with preflight_file.open("x", encoding="utf-8") as stream:
                 json.dump(diagnostics, stream, indent=2)
             requested = {url: row for url, row in requested.items() if eligible[url]}
@@ -564,7 +579,8 @@ class GowitnessCapture:
             for row in requested.values():
                 row["capture_queued"] = True
             progress_metrics["launched"] = len(requested)
-            monitor = _JsonlProgress(metadata, workdir, requested, callback, progress_metrics) if callable(callback) else None
+            monitor = _JsonlProgress(metadata, workdir, requested, callback, progress_metrics,
+                on_result=lambda record: decisions.browser_reported(record, requested))
             try:
                 with (workdir / "gowitness.log").open("x", encoding="utf-8") as log:
                     outcome = _run_command(command, cancel_event=self.cancel_event, timeout=self.timeout,
@@ -580,6 +596,7 @@ class GowitnessCapture:
                 monitor.poll()
             malformed, foreign, duplicates = _validate_metadata(metadata, workdir, requested, self._check_shutdown,
                 title_filter=getattr(self, "title_filter", {}), original_domains=getattr(self, "original_domains", set()))
+            decisions.verified(requested)
             detail = f"Captured {sum(row['status'] == 'captured' for row in requested.values())} of {len(requested)} HTTP-responsive endpoints; other attempts were skipped by preflight."
             if issue:
                 detail += " " + issue
@@ -596,9 +613,14 @@ class GowitnessCapture:
             detail = f"Screenshot capture could not complete: {type(error).__name__}: {error}"
             for row in requested.values():
                 row.update(status="failed", relative_path=None, error=detail)
+            if decisions is not None:
+                decisions.verified(requested)
             stage = self._stage(results, detail, failed=True, version=detected_version)
             _report_progress(callback, "screenshots", current=len(requested), total=len(requested), metrics=stage)
             return results, stage
+        finally:
+            if decisions is not None:
+                decisions.close()
 
     @staticmethod
     def exit_issue(workdir, returncode):

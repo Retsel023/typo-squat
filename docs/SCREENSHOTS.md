@@ -13,6 +13,23 @@ already-created image remains in manual history. Pre-browser skips and
 post-capture exclusions have separate counts. Missing/unreadable titles remain
 eligible, and original references bypass title exclusions.
 
+**Live output → capture-decisions.log** explains each endpoint's browser
+selection alongside `gowitness.log`. `before_browser` records the fetched HTML
+title, read status, filter decision and reason for selecting or skipping
+Gowitness. `browser_reported` records the rendered title/filter while the scan is
+still running; its screenshot flag is provisional until artifact validation.
+`verified_result` records whether a valid image was actually saved and whether
+the browser title caused a later report exclusion. A selected URL is not proof
+of a capture, and `have-screenshot=true` in Gowitness output is not proof that
+the application accepted its artifact or included it in a report.
+
+The decision log is recent local telemetry, capped at 2 MiB with older entries
+trimmed. It contains bounded metadata, not page bodies or proxy credentials.
+The UI still reads only a bounded tail. Complete accepted observations remain
+in saved capture history. Logging does not alter exclusions or prevent a
+browser-only title's first capture; the earlier HTML result is needed to
+diagnose why any particular title missed the pre-browser check.
+
 The adapter supports [Gowitness 3.2.2](https://github.com/sensepost/gowitness/releases/tag/3.2.2) and checks `gowitness version` before capture. Chrome or Chromium must already be installed or supplied through `chrome_path`. Recognized browser commands include Chromium, Google Chrome, and `google-chrome-unstable`; the explicit browser path is always passed to Gowitness. The adapter does not request a browser download or reuse a logged-in browser profile.
 
 The [pinned CLI](https://github.com/sensepost/gowitness/blob/3.2.2/cmd/scan.go) is invoked with `scan file`, PNG filesystem output, `--write-jsonl`, an explicit JSONL destination, bounded threads, scan-error logging, and HTML/network-body collection disabled. A global subprocess deadline and cooperative cancellation bound the batch. Input contains `http://domain:80` and `https://domain:443`. Explicit ports matter because the [file reader](https://github.com/sensepost/gowitness/blob/3.2.2/pkg/readers/file.go) otherwise expands the default port list even when a scheme was supplied.

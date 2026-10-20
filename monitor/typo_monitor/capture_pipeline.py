@@ -19,6 +19,7 @@ from .screenshots import (
     _validate_metadata, _apply_preflight, _deduplicate_protocols,
 )
 from .website_probe import WebsiteProbe
+from .capture_decisions import CaptureDecisionLog
 
 
 class _CombinedSignal:
@@ -166,6 +167,7 @@ def capture_stream(capture, domains_iterator, workdir):
     results, requested, diagnostics = {}, {}, {}
     callback = getattr(capture, "progress_callback", None)
     process = log = targets = monitor = feed = events = None
+    decisions = None
     issue = detected_version = None
     preflight_file = None
     paths_ready = False
@@ -229,7 +231,8 @@ def capture_stream(capture, domains_iterator, workdir):
                                    shell=False, cwd=workdir, bufsize=0, start_new_session=os.name == "posix",
                                    env=getattr(capture, "proxy_environment", None))
         os.set_blocking(process.stdin.fileno(), False)
-        monitor = _JsonlProgress(metadata, workdir, [], callback, capture.performance_metrics())
+        monitor = _JsonlProgress(metadata, workdir, [], callback, capture.performance_metrics(),
+            on_result=lambda record: decisions.browser_reported(record, requested))
         _report_progress(callback, "screenshots", "Capturing responsive endpoints while DNS checks continue.",
                          current=0, total=len(requested), metrics={"input_open": True, **capture.performance_metrics()})
 
@@ -276,6 +279,7 @@ def capture_stream(capture, domains_iterator, workdir):
             if path.exists() or path.is_symlink():
                 raise ValueError("Existing screenshot metadata cannot be reused for a new capture.")
         paths_ready = True
+        decisions = CaptureDecisionLog(workdir, capture)
         # Isolate cancellation attributes even for an injected reusable probe.
         # An OS resolver call can outlive requests' HTTP deadline; its old
         # worker must retain this run's stopped signal when a later scan starts.
@@ -319,7 +323,9 @@ def capture_stream(capture, domains_iterator, workdir):
             body_duplicates += sum(item["preflight"].get("skip_reason") == "duplicate_body" for item in rows)
             for item in rows:
                 target = item["url"]
-                if not pending.pop(target):
+                selected = pending.pop(target)
+                decisions.before(item, selected)
+                if not selected:
                     continue
                 requested[target] = item
                 if process is None and issue is None:
@@ -372,6 +378,7 @@ def capture_stream(capture, domains_iterator, workdir):
         queued = {url: row for url, row in requested.items() if row.get("capture_queued")}
         malformed, foreign, duplicates = _validate_metadata(metadata, workdir, queued, capture._check_shutdown,
             title_filter=getattr(capture, "title_filter", {}), original_domains=getattr(capture, "original_domains", set()))
+        decisions.verified(requested)
         detail = (f"Captured {sum(row['status'] == 'captured' for row in requested.values())} of "
                   f"{len(requested)} HTTP-responsive endpoints using one streamed Gowitness process.")
         if issue:
@@ -392,9 +399,13 @@ def capture_stream(capture, domains_iterator, workdir):
             for row in rows:
                 if row["status"] != "skipped":
                     row.update(status="failed", relative_path=None, error=detail)
+        if decisions is not None:
+            decisions.verified(requested)
         return results, capture._stage(results, detail, failed=True, version=detected_version)
     finally:
         stopped.set()
+        if decisions is not None:
+            decisions.close()
         if process is not None:
             if process.poll() is None or process.returncode != 0:
                 _stop_process(process)
